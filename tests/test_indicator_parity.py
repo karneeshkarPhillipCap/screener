@@ -25,10 +25,10 @@ import pytest
 from screener.backtester.pine import _atr as pine_atr
 from screener.backtester.pine import _rsi as pine_rsi
 
-from run_pinescript_strategies import _atr as pp_atr
-from run_pinescript_strategies import _ema as pp_ema
-from run_pinescript_strategies import _rsi as pp_rsi
-from run_pinescript_strategies import _sma as pp_sma
+from screener.backtester.pine_runner import _atr as pp_atr
+from screener.backtester.pine_runner import _ema as pp_ema
+from screener.backtester.pine_runner import _rsi as pp_rsi
+from screener.backtester.pine_runner import _sma as pp_sma
 
 
 @pytest.fixture(scope="module")
