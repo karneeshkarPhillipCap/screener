@@ -1,6 +1,7 @@
 from datetime import date, datetime
 
 import click
+import pandas as pd
 
 from screener import history
 from screener.backtester.historical import backtest_historical
@@ -19,6 +20,7 @@ from screener.rs_breakout import (
     write_markdown as write_rs_breakout_markdown,
 )
 from screener.unusual_volume.cli import unusual_volume
+from screener.resilience import call_with_resilience
 
 
 @click.group()
@@ -351,7 +353,12 @@ def promoter_buys(
         .limit(int(universe_size))
     )
 
-    total, universe = query.get_scanner_data()
+    total, universe = call_with_resilience(
+        "tradingview",
+        "promoter universe",
+        query.get_scanner_data,
+        fallback=(0, pd.DataFrame()),
+    )
     if not universe.empty:
         universe = _dedupe_listings(universe)
 

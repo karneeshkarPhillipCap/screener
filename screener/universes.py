@@ -9,6 +9,8 @@ from typing import Literal
 import pandas as pd
 import requests
 
+from screener.resilience import call_with_resilience
+
 
 CACHE_DIR = Path.home() / ".screener" / "universes"
 UniverseName = Literal["sp500", "nifty50"]
@@ -89,7 +91,14 @@ def _fetch_sp500() -> tuple[list[str], str]:
             "KHTML, like Gecko) Chrome/122.0 Safari/537.36"
         )
     }
-    resp = requests.get(source, headers=headers, timeout=30)
+    resp = call_with_resilience(
+        "wikipedia",
+        "sp500 constituents",
+        lambda: requests.get(source, headers=headers, timeout=30),
+        fallback=None,
+    )
+    if resp is None:
+        raise RuntimeError("S&P 500 constituents unavailable")
     resp.raise_for_status()
     from io import StringIO
 
@@ -119,7 +128,14 @@ def _fetch_nifty50() -> tuple[list[str], str]:
             "KHTML, like Gecko) Chrome/122.0 Safari/537.36"
         )
     }
-    resp = requests.get(source, headers=headers, timeout=30)
+    resp = call_with_resilience(
+        "nse",
+        "nifty50 constituents",
+        lambda: requests.get(source, headers=headers, timeout=30),
+        fallback=None,
+    )
+    if resp is None:
+        raise RuntimeError("Nifty 50 constituents unavailable")
     resp.raise_for_status()
     from io import StringIO
 

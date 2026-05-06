@@ -15,6 +15,8 @@ from typing import Iterable, Optional, Protocol
 
 import pandas as pd
 
+from screener.resilience import call_with_resilience
+
 
 CACHE_DIR = Path.home() / ".screener" / "prices"
 
@@ -172,19 +174,21 @@ class YFinancePriceFetcher:
                 ):
                     results[ticker] = in_range
                     continue
-            try:
-                download_kwargs = dict(
-                    start=start_ts,
-                    end=end_ts + pd.Timedelta(days=1),
-                    auto_adjust=self.auto_adjust,
-                    progress=False,
-                    threads=False,
-                )
-                if not self.auto_adjust:
-                    download_kwargs["actions"] = True
-                raw = yf.download(ticker, **download_kwargs)
-            except Exception:
-                raw = pd.DataFrame()
+            download_kwargs = dict(
+                start=start_ts,
+                end=end_ts + pd.Timedelta(days=1),
+                auto_adjust=self.auto_adjust,
+                progress=False,
+                threads=False,
+            )
+            if not self.auto_adjust:
+                download_kwargs["actions"] = True
+            raw = call_with_resilience(
+                "yfinance",
+                f"download {ticker}",
+                lambda: yf.download(ticker, **download_kwargs),
+                fallback=pd.DataFrame(),
+            )
             norm = _normalize_frame(raw)
             if norm.empty:
                 results[ticker] = norm

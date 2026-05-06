@@ -19,6 +19,8 @@ from typing import Iterable, Optional
 
 import pandas as pd
 
+from screener.resilience import call_with_resilience
+
 from .detector import Event
 
 
@@ -40,9 +42,13 @@ def _load_one_day(dt: date) -> Optional[pd.DataFrame]:
     from jugaad_data.nse import full_bhavcopy_save  # lazy import
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        path = full_bhavcopy_save(dt, str(CACHE_DIR))
-    except Exception:
+    path = call_with_resilience(
+        "nse",
+        f"delivery bhavcopy {dt}",
+        lambda: full_bhavcopy_save(dt, str(CACHE_DIR)),
+        fallback=None,
+    )
+    if path is None:
         return None
     if not path or not os.path.isfile(path):
         return None

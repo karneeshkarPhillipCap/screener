@@ -23,5 +23,37 @@ screener = "main:cli"
 [dependency-groups]
 dev = [
     "matplotlib>=3.10.8",
+    "mypy>=1.10",
+    "pandas-stubs>=2.0",
     "pytest>=8.0",
+    "types-requests>=2.31",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["main.py", "run_pinescript_strategies.py", "screener"]
+exclude = ["tests"]
+disable_error_code = [
+    "arg-type",
+    "attr-defined",
+    "call-overload",
+    "index",
+    "no-any-return",
+    "no-untyped-call",
+    "no-untyped-def",
+    "operator",
+    "return-value",
+    "type-arg",
+    "union-attr",
+    "var-annotated",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "jugaad_data.*",
+    "openscreener.*",
+    "tradingview_screener.*",
+    "yfinance.*",
+]
+ignore_missing_imports = true

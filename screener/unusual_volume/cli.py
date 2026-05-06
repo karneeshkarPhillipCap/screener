@@ -427,10 +427,10 @@ def unusual_volume(
             bars = bars_for_buildup.get(s.symbol)
             if bars is None or bars.empty:
                 continue
-            ev = _standalone_buildup_event(s, bars, as_of)
-            if ev is None:
+            standalone = _standalone_buildup_event(s, bars, as_of)
+            if standalone is None:
                 continue
-            events.append(ev)
+            events.append(standalone)
             added += 1
         console.print(
             f"[dim]Build-up pass: annotated {annotated} event(s); "

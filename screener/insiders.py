@@ -25,6 +25,8 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 
+from screener.resilience import call_with_resilience
+
 
 _INDIA_SUFFIXES = (".NS", ".BO")
 _SCREENER_URL = "https://www.screener.in/company/{symbol}/"
@@ -57,9 +59,13 @@ def _row_value(df: pd.DataFrame, label: str, column: str) -> Optional[float]:
 
 
 def _fetch_yf_one(name: str, yf_symbol: str) -> Optional[dict]:
-    try:
-        purchases = yf.Ticker(yf_symbol).insider_purchases
-    except Exception:
+    purchases = call_with_resilience(
+        "yfinance",
+        f"insider purchases {yf_symbol}",
+        lambda: yf.Ticker(yf_symbol).insider_purchases,
+        fallback=None,
+    )
+    if purchases is None:
         return None
     if purchases is None or purchases.empty:
         return None
@@ -113,11 +119,19 @@ class _HttpScraper:
     consolidated = False
 
     def fetch_page(self, symbol: str) -> str:
-        req = urllib.request.Request(
-            self.base_url.format(symbol=symbol.upper()), headers=_SCREENER_HEADERS
+        def _fetch() -> str:
+            req = urllib.request.Request(
+                self.base_url.format(symbol=symbol.upper()), headers=_SCREENER_HEADERS
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.read().decode("utf-8", "ignore")
+
+        return call_with_resilience(
+            "screener-in",
+            f"company page {symbol}",
+            _fetch,
+            fallback="",
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.read().decode("utf-8", "ignore")
 
     def fetch_pages(self, symbols):
         return {s.upper(): self.fetch_page(s) for s in symbols}
@@ -128,11 +142,15 @@ def _fetch_openscreener_one(name: str) -> Optional[dict]:
         from openscreener import Stock
     except ImportError:
         return None
-    try:
-        rows = Stock(name, scraper=_HttpScraper()).shareholding_quarterly()
-    except Exception:
+    rows = call_with_resilience(
+        "screener-in",
+        f"shareholding {name}",
+        lambda: Stock(name, scraper=_HttpScraper()).shareholding_quarterly(),
+        fallback=None,
+    )
+    if not rows:
         return None
-    if not rows or len(rows) < 2:
+    if len(rows) < 2:
         return None
 
     latest, prev = rows[-1], rows[-2]

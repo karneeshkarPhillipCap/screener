@@ -128,7 +128,8 @@ def _run_event_driven_sim(
     reentries_left: dict[int, int] = {}
     pending_reentry: dict[int, str] = {}
 
-    for slot_id, row in actives_df.iterrows():
+    for raw_slot_id, row in actives_df.iterrows():
+        slot_id = int(raw_slot_id)
         ticker = row["ticker"]
         bars = bars_by_tv.get(ticker, pd.DataFrame())
         if bars is None or bars.empty:
@@ -176,18 +177,18 @@ def _run_event_driven_sim(
     for day in master_dates:
         if pending_reentry:
             for slot_id, ticker in list(pending_reentry.items()):
-                bars = slot_bars.get(slot_id)
-                if bars is None or bars.empty:
+                slot_frame = slot_bars.get(slot_id)
+                if slot_frame is None or slot_frame.empty:
                     del pending_reentry[slot_id]
                     continue
-                signal_idx = _eligible_reserve_signal_idx(
-                    bars, day, cfg, entry_ast, lookback
+                reentry_signal_idx = _eligible_reserve_signal_idx(
+                    slot_frame, day, cfg, entry_ast, lookback
                 )
-                if signal_idx is None:
+                if reentry_signal_idx is None:
                     continue
                 new_rank = portfolio._ranks.get(ticker, 0)
                 state, warn = _make_slot_state(
-                    ticker, bars, signal_idx, cfg, exit_ast, new_rank
+                    ticker, slot_frame, reentry_signal_idx, cfg, exit_ast, new_rank
                 )
                 if state is None:
                     if warn:
@@ -248,19 +249,19 @@ def _run_event_driven_sim(
                 continue
             while reserve_queue:
                 reserve = reserve_queue.pop(0)
-                ticker = reserve["ticker"]
+                ticker = str(reserve["ticker"])
                 if ticker in taken:
                     continue
-                bars = bars_by_tv.get(ticker, pd.DataFrame())
-                if bars is None or bars.empty:
+                reserve_bars = bars_by_tv.get(ticker, pd.DataFrame())
+                if reserve_bars is None or reserve_bars.empty:
                     continue
-                signal_idx = _eligible_reserve_signal_idx(
-                    bars, day, cfg, entry_ast, lookback
+                reserve_signal_idx = _eligible_reserve_signal_idx(
+                    reserve_bars, day, cfg, entry_ast, lookback
                 )
-                if signal_idx is None:
+                if reserve_signal_idx is None:
                     continue
                 state, warn = _make_slot_state(
-                    ticker, bars, signal_idx, cfg, exit_ast, int(reserve["rank"])
+                    ticker, reserve_bars, reserve_signal_idx, cfg, exit_ast, int(reserve["rank"])
                 )
                 if state is None:
                     if warn:
@@ -274,7 +275,7 @@ def _run_event_driven_sim(
                     commission_bps=cfg.commission_bps,
                 )
                 slot_states[slot_id] = state
-                slot_bars[slot_id] = bars
+                slot_bars[slot_id] = reserve_bars
                 taken.add(ticker)
                 break
 
@@ -630,4 +631,3 @@ def backtest_historical(
         print_ledger_csv(result)
         return
     print_backtest(result)
-

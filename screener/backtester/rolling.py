@@ -18,6 +18,7 @@ from screener.backtester.core import (
     _active_or_pending_tickers,
     _bar_index_on_or_before,
     _close_slot_at_day,
+    _SlotState,
     _force_close_open_slots,
     _make_slot_state,
     _passes_entry_filters,
@@ -153,7 +154,9 @@ def run_rolling_backtest(
 
     master_dates = sorted(day_set)
     portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
-    slot_states = {slot_id: None for slot_id in range(max(cfg.top, 1))}
+    slot_states: dict[int, _SlotState | None] = {
+        slot_id: None for slot_id in range(max(cfg.top, 1))
+    }
     slot_bars: dict[int, pd.DataFrame] = {}
     selection_rows: list[dict] = []
 
@@ -437,4 +440,3 @@ def backtest_rolling(
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
     print_backtest(result)
-

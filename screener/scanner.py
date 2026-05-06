@@ -4,6 +4,8 @@ import re
 from tradingview_screener import Query
 import pandas as pd
 
+from screener.resilience import call_with_resilience
+
 
 MARKETS = {
     "us": "america",
@@ -129,7 +131,12 @@ def scan(
         .limit(fetch_limit)
     )
 
-    count, df = query.get_scanner_data()
+    count, df = call_with_resilience(
+        "tradingview",
+        "scanner data",
+        query.get_scanner_data,
+        fallback=(0, pd.DataFrame(columns=columns)),
+    )
     if order_by == "setup_score" and not df.empty:
         df = _add_setup_score(df)
         df = df.sort_values("setup_score", ascending=False)

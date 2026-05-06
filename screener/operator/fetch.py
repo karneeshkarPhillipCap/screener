@@ -31,6 +31,8 @@ from typing import Iterable, Optional
 
 import pandas as pd
 
+from screener.resilience import call_with_resilience
+
 LOG = logging.getLogger(__name__)
 
 CACHE_ROOT = Path.home() / ".screener" / "nse_bhavcopy"
@@ -102,7 +104,12 @@ def _read_cash_bhavcopy_raw(d: date) -> pd.DataFrame:
     path = _cash_cache_path(d)
     if not path.exists():
         n = NSEArchives()
-        n.full_bhavcopy_save(d, str(path.parent))
+        call_with_resilience(
+            "nse",
+            f"cash bhavcopy {d}",
+            lambda: n.full_bhavcopy_save(d, str(path.parent)),
+            fallback=None,
+        )
     if not path.exists():
         raise FileNotFoundError(path)
     df = pd.read_csv(path)
@@ -164,7 +171,14 @@ def fetch_fo_bhavcopy(d: date) -> pd.DataFrame:
     if not path.exists():
         n = NSEArchives()
         url = FO_ARCHIVE_URL.format(yyyymmdd=d.strftime("%Y%m%d"))
-        r = n.s.get(url, timeout=10)
+        r = call_with_resilience(
+            "nse",
+            f"fo bhavcopy {d}",
+            lambda: n.s.get(url, timeout=10),
+            fallback=None,
+        )
+        if r is None:
+            raise RuntimeError(f"FO bhavcopy fetch failed for {d}: NSE unavailable")
         if r.status_code != 200 or r.content[:2] != b"PK":
             raise RuntimeError(
                 f"FO bhavcopy fetch failed for {d}: HTTP {r.status_code}, "

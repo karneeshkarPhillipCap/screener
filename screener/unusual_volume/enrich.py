@@ -13,6 +13,8 @@ from typing import Iterable, Optional
 import pandas as pd
 from tradingview_screener import Query, col
 
+from screener.resilience import call_with_resilience
+
 from .detector import Event
 
 
@@ -32,10 +34,12 @@ def fetch_sector_map(market: str, symbols: Iterable[str]) -> dict[str, dict]:
         .where(col("name").isin(syms))
         .limit(len(syms) + 50)
     )
-    try:
-        _count, df = query.get_scanner_data()
-    except Exception:
-        return {}
+    _count, df = call_with_resilience(
+        "tradingview",
+        "sector enrichment",
+        query.get_scanner_data,
+        fallback=(0, pd.DataFrame()),
+    )
     out: dict[str, dict] = {}
     if df is None or df.empty:
         return out
