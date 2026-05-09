@@ -5,6 +5,7 @@ The command is registered on the main ``cli`` group in ``main.py`` via:
     from screener.unusual_volume.cli import unusual_volume
     cli.add_command(unusual_volume)
 """
+
 from __future__ import annotations
 
 import sys
@@ -18,7 +19,7 @@ import pandas as pd
 import requests
 from rich.console import Console
 
-from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
+from screener.backtester.data import build_price_fetcher, tv_to_yf
 from .buildup import (
     BuildupScore,
     DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
@@ -55,13 +56,14 @@ def _resolve_universe(
         return [line.strip() for line in path.read_text().splitlines() if line.strip()]
     # Fallback to the project's default universe loader.
     from screener.backtester.pine_runner import load_universe  # lazy import; pulls TV
+
     return load_universe(market)
 
 
 def _fetch_bars(
     tickers: list[str], market: str, as_of: date, console: Console
 ) -> dict[str, pd.DataFrame]:
-    fetcher = YFinancePriceFetcher()
+    fetcher = build_price_fetcher()
     start = as_of - timedelta(days=400)
     end = as_of + timedelta(days=1)
 
@@ -126,11 +128,11 @@ def _standalone_buildup_event(
     if df_s.empty:
         return None
     last = df_s.iloc[-1]
-    prev_close = float(df_s["close"].iloc[-2]) if len(df_s) >= 2 else float(last["close"])
-    close_v = float(last["close"])
-    pct_change = (
-        (close_v - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
+    prev_close = (
+        float(df_s["close"].iloc[-2]) if len(df_s) >= 2 else float(last["close"])
     )
+    close_v = float(last["close"])
+    pct_change = (close_v - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
     return Event(
         symbol=score.symbol,
         date=as_of,
@@ -242,7 +244,9 @@ def _standalone_buildup_event(
     default=False,
     help="Skip JSON/MD writes (rich-table only).",
 )
-@click.option("--refresh", is_flag=True, help="Bypass cached yfinance and enrichment data.")
+@click.option(
+    "--refresh", is_flag=True, help="Bypass cached yfinance and enrichment data."
+)
 @click.option(
     "-n",
     "--limit",
@@ -295,7 +299,9 @@ def unusual_volume(
     """Detect abnormal trading volume across a market on a given day."""
     console = Console()
     as_of: date = (
-        as_of_arg.date() if isinstance(as_of_arg, datetime) else (as_of_arg or date.today())
+        as_of_arg.date()
+        if isinstance(as_of_arg, datetime)
+        else (as_of_arg or date.today())
     )
 
     universe = _resolve_universe(market, tickers, universe_file)

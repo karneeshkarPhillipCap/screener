@@ -1,4 +1,5 @@
 """Reusable unusual-volume scan workflow."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ import pandas as pd
 import requests
 from rich.console import Console
 
-from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
+from screener.backtester.data import build_price_fetcher, tv_to_yf
 from .buildup import BuildupScore, compute_buildup_score, scan_buildups
 from .delivery import load_delivery_panel, overlay_events, quiet_accumulation_events
 from .detector import Event, detect_market
@@ -54,7 +55,7 @@ def fetch_bars(
     *,
     refresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
-    fetcher = YFinancePriceFetcher(refresh=refresh)
+    fetcher = build_price_fetcher(refresh=refresh)
     start = as_of - timedelta(days=400)
     end = as_of + timedelta(days=1)
 
@@ -109,11 +110,11 @@ def standalone_buildup_event(
     if df_s.empty:
         return None
     last = df_s.iloc[-1]
-    prev_close = float(df_s["close"].iloc[-2]) if len(df_s) >= 2 else float(last["close"])
-    close_v = float(last["close"])
-    pct_change = (
-        (close_v - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
+    prev_close = (
+        float(df_s["close"].iloc[-2]) if len(df_s) >= 2 else float(last["close"])
     )
+    close_v = float(last["close"])
+    pct_change = (close_v - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
     return Event(
         symbol=score.symbol,
         date=as_of,
@@ -227,7 +228,9 @@ def run_unusual_volume_scan(
         )
 
     if request.market == "india" and request.deep_india and events:
-        console.print("[dim]Running openscreener deep enrichment for India events...[/dim]")
+        console.print(
+            "[dim]Running openscreener deep enrichment for India events...[/dim]"
+        )
         deep_enrich_india(events)
 
     return UnusualVolumeResult(
@@ -274,7 +277,9 @@ def _overlay_india_delivery(
         existing_events=events,
     )
     if quiet:
-        console.print(f"[dim]Quiet-accumulation pass added {len(quiet)} event(s).[/dim]")
+        console.print(
+            f"[dim]Quiet-accumulation pass added {len(quiet)} event(s).[/dim]"
+        )
     events.extend(quiet)
     return panel
 

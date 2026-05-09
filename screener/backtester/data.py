@@ -7,18 +7,22 @@ mapper that translates TradingView-style tickers to yfinance tickers.
 Tests inject a ``StubPriceFetcher`` that returns pre-built synthetic frames;
 the engine never depends directly on yfinance.
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime
+import os
 from pathlib import Path
 from typing import Iterable, Optional, Protocol
 
 import pandas as pd
+import requests
 
 from screener.resilience import call_with_resilience
 
 
 CACHE_DIR = Path.home() / ".screener" / "prices"
+FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
 
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
@@ -152,13 +156,17 @@ def _split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataF
         return {ticker: _normalize_frame(raw)}
 
     frames: dict[str, pd.DataFrame] = {}
-    level_values = [set(raw.columns.get_level_values(i)) for i in range(raw.columns.nlevels)]
+    level_values = [
+        set(raw.columns.get_level_values(i)) for i in range(raw.columns.nlevels)
+    ]
     for ticker in tickers:
         frame = pd.DataFrame()
         for level, values in enumerate(level_values):
             if ticker in values:
                 selected = raw.xs(ticker, level=level, axis=1, drop_level=True)
-                frame = selected.to_frame() if isinstance(selected, pd.Series) else selected
+                frame = (
+                    selected.to_frame() if isinstance(selected, pd.Series) else selected
+                )
                 break
         frames[ticker] = _normalize_frame(frame)
     return frames
@@ -222,17 +230,27 @@ class YFinancePriceFetcher:
             cached = None if self.refresh else _load_cached(cache_key, self.cache_dir)
             if cached is not None and not cached.empty:
                 cached_by_ticker[ticker] = cached
-            if not self.refresh and cached is not None and _has_range(cached, start_ts, end_ts):
-                results[ticker] = cached.loc[(cached.index >= start_ts) & (cached.index <= end_ts)]
+            if (
+                not self.refresh
+                and cached is not None
+                and _has_range(cached, start_ts, end_ts)
+            ):
+                results[ticker] = cached.loc[
+                    (cached.index >= start_ts) & (cached.index <= end_ts)
+                ]
                 continue
 
             fetch_start, fetch_end = start_ts, end_ts
             if not self.refresh and cached is not None and not cached.empty:
                 min_cached = cached.index.min()
                 max_cached = cached.index.max()
-                if min_cached <= start_ts + pd.Timedelta(days=3) and max_cached < end_ts - pd.Timedelta(days=3):
+                if min_cached <= start_ts + pd.Timedelta(
+                    days=3
+                ) and max_cached < end_ts - pd.Timedelta(days=3):
                     fetch_start = max_cached + pd.Timedelta(days=1)
-                elif max_cached >= end_ts - pd.Timedelta(days=3) and min_cached > start_ts + pd.Timedelta(days=3):
+                elif max_cached >= end_ts - pd.Timedelta(
+                    days=3
+                ) and min_cached > start_ts + pd.Timedelta(days=3):
                     fetch_end = min_cached - pd.Timedelta(days=1)
             missing.setdefault((fetch_start, fetch_end), []).append(ticker)
 
@@ -262,8 +280,183 @@ class YFinancePriceFetcher:
                     merged = _merge_cached(cached_by_ticker.get(ticker), norm)
                     if not merged.empty:
                         _save_cache(cache_key, merged, self.cache_dir)
-                    results[ticker] = merged.loc[(merged.index >= start_ts) & (merged.index <= end_ts)]
+                    results[ticker] = merged.loc[
+                        (merged.index >= start_ts) & (merged.index <= end_ts)
+                    ]
         return results
+
+
+def _fmp_cache_key(ticker: str, auto_adjust: bool) -> str:
+    suffix = "" if auto_adjust else "__raw"
+    return f"fmp_{ticker}{suffix}"
+
+
+def _normalize_fmp_historical(payload: object, auto_adjust: bool) -> pd.DataFrame:
+    if not isinstance(payload, dict):
+        return pd.DataFrame(columns=OHLCV_COLUMNS)
+    rows = payload.get("historical")
+    if not isinstance(rows, list) or not rows:
+        return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+    df = pd.DataFrame(rows)
+    if "date" not in df.columns:
+        return pd.DataFrame(columns=OHLCV_COLUMNS)
+
+    rename = {
+        "open": "open",
+        "high": "high",
+        "low": "low",
+        "close": "close",
+        "volume": "volume",
+        "adjClose": "adj_close",
+    }
+    keep = [source for source in rename if source in df.columns]
+    out = df[["date", *keep]].rename(columns=rename).copy()
+    out.index = pd.to_datetime(out.pop("date"), errors="coerce")
+    out = out[out.index.notna()]
+    out.index = out.index.tz_localize(None).normalize()
+
+    for col in [*OHLCV_COLUMNS, "adj_close"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    if auto_adjust and "adj_close" in out.columns and "close" in out.columns:
+        factor = out["adj_close"] / out["close"].replace(0, pd.NA)
+        for col in ["open", "high", "low", "close"]:
+            if col in out.columns:
+                out[col] = out[col] * factor
+    keep_cols = [col for col in [*OHLCV_COLUMNS, "adj_close"] if col in out.columns]
+    out = out[keep_cols].dropna(
+        subset=[col for col in OHLCV_COLUMNS if col in out.columns]
+    )
+    return out[~out.index.duplicated(keep="last")].sort_index()
+
+
+class FMPPriceFetcher:
+    """Fetch daily OHLCV from Financial Modeling Prep.
+
+    The API key is read from ``FMP_API_KEY`` unless passed explicitly.
+    """
+
+    base_url = "https://financialmodelingprep.com/api/v3/historical-price-full"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        cache_dir: Optional[Path] = None,
+        auto_adjust: bool = True,
+        refresh: bool = False,
+        session: requests.Session | None = None,
+    ) -> None:
+        self.api_key = api_key or os.environ.get("FMP_API_KEY")
+        if not self.api_key:
+            raise ValueError("FMP_API_KEY is required to use the FMP price fetcher")
+        self.cache_dir = cache_dir or FMP_CACHE_DIR
+        self.auto_adjust = bool(auto_adjust)
+        self.refresh = bool(refresh)
+        self.session = session or requests.Session()
+
+    def fetch(
+        self, tickers: Iterable[str], start: date, end: date
+    ) -> dict[str, pd.DataFrame]:
+        start_ts = pd.Timestamp(start)
+        end_ts = pd.Timestamp(end)
+        results: dict[str, pd.DataFrame] = {}
+
+        for ticker in [t for t in tickers if t]:
+            cache_key = _fmp_cache_key(ticker, self.auto_adjust)
+            cached = None if self.refresh else _load_cached(cache_key, self.cache_dir)
+            if (
+                not self.refresh
+                and cached is not None
+                and _has_range(cached, start_ts, end_ts)
+            ):
+                results[ticker] = cached.loc[
+                    (cached.index >= start_ts) & (cached.index <= end_ts)
+                ]
+                continue
+
+            def request_payload() -> object:
+                response = self.session.get(
+                    f"{self.base_url}/{ticker}",
+                    params={
+                        "from": start_ts.date().isoformat(),
+                        "to": end_ts.date().isoformat(),
+                        "apikey": self.api_key,
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                return response.json()
+
+            payload = call_with_resilience(
+                "fmp",
+                f"historical prices {ticker}",
+                request_payload,
+                fallback={},
+            )
+            norm = _normalize_fmp_historical(payload, self.auto_adjust)
+            merged = _merge_cached(cached, norm)
+            if not merged.empty:
+                _save_cache(cache_key, merged, self.cache_dir)
+                results[ticker] = merged.loc[
+                    (merged.index >= start_ts) & (merged.index <= end_ts)
+                ]
+            else:
+                results[ticker] = pd.DataFrame(columns=OHLCV_COLUMNS)
+        return results
+
+
+class FallbackPriceFetcher:
+    """Use a primary fetcher first and fill missing ticker frames from fallback."""
+
+    def __init__(self, primary: PriceFetcher, fallback: PriceFetcher) -> None:
+        self.primary = primary
+        self.fallback = fallback
+
+    def fetch(
+        self, tickers: Iterable[str], start: date, end: date
+    ) -> dict[str, pd.DataFrame]:
+        ticker_list = [ticker for ticker in tickers if ticker]
+        primary_results = self.primary.fetch(ticker_list, start, end)
+        missing = [
+            ticker
+            for ticker in ticker_list
+            if ticker not in primary_results
+            or primary_results[ticker] is None
+            or primary_results[ticker].empty
+        ]
+        if not missing:
+            return primary_results
+
+        fallback_results = self.fallback.fetch(missing, start, end)
+        results = dict(primary_results)
+        for ticker in missing:
+            frame = fallback_results.get(ticker)
+            if frame is not None and not frame.empty:
+                results[ticker] = frame
+            else:
+                results.setdefault(ticker, pd.DataFrame(columns=OHLCV_COLUMNS))
+        return results
+
+
+def build_price_fetcher(
+    provider: str | None = None,
+    *,
+    auto_adjust: bool = True,
+    refresh: bool = False,
+) -> PriceFetcher:
+    resolved = (provider or os.environ.get("SCREENER_PRICE_PROVIDER") or "auto").lower()
+    if resolved in {"auto", "default"}:
+        primary = YFinancePriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+        if os.environ.get("FMP_API_KEY"):
+            fallback = FMPPriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+            return FallbackPriceFetcher(primary, fallback)
+        return primary
+    if resolved in {"yf", "yfinance"}:
+        return YFinancePriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+    if resolved in {"fmp", "financialmodelingprep"}:
+        return FMPPriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+    raise ValueError(f"Unknown price provider: {provider}")
 
 
 def fetch_benchmark(
@@ -277,7 +470,9 @@ def fetch_benchmark(
     data = fetcher.fetch([symbol], start, end)
     frame = data.get(symbol)
     if frame is None or frame.empty:
-        return pd.Series(dtype=float, name=symbol)
+        return pd.Series(
+            index=pd.DatetimeIndex([], name="date"), dtype=float, name=symbol
+        )
     series = frame["close"].astype(float).copy()
     series.name = symbol
     return series
