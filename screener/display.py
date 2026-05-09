@@ -25,6 +25,15 @@ COLUMN_LABELS = {
     "P/E": "P/E",
     "ROCE%": "ROCE%",
     "ROE%": "ROE%",
+    "garp_score": "GARP",
+    "peg": "PEG",
+    "sales": "Sales",
+    "sales_growth_5y": "Sales 5Y%",
+    "operating_profit_growth": "OP Growth%",
+    "eps_growth_5y": "EPS 5Y%",
+    "roe_5y": "ROE 5Y%",
+    "roce_or_roic": "ROCE/ROIC",
+    "quarterly_profit_growth": "Q Profit%",
 }
 
 RIGHT_ALIGN = {
@@ -45,6 +54,15 @@ RIGHT_ALIGN = {
     "P/E",
     "ROCE%",
     "ROE%",
+    "garp_score",
+    "peg",
+    "sales",
+    "sales_growth_5y",
+    "operating_profit_growth",
+    "eps_growth_5y",
+    "roe_5y",
+    "roce_or_roic",
+    "quarterly_profit_growth",
 }
 
 
@@ -80,8 +98,24 @@ def _format_value(col: str, val) -> str:
         "P/E",
         "ROCE%",
         "ROE%",
+        "garp_score",
+        "peg",
+        "sales_growth_5y",
+        "operating_profit_growth",
+        "eps_growth_5y",
+        "roe_5y",
+        "roce_or_roic",
+        "quarterly_profit_growth",
     ):
         return f"{val:.2f}"
+    if col == "sales":
+        if val >= 1e12:
+            return f"{val / 1e12:.2f}T"
+        if val >= 1e9:
+            return f"{val / 1e9:.2f}B"
+        if val >= 1e6:
+            return f"{val / 1e6:.1f}M"
+        return f"{val:,.0f}"
 
     return str(val)
 
@@ -156,6 +190,40 @@ def _print_diff(
 
 def print_csv(df: pd.DataFrame) -> None:
     print(df.to_csv(index=False))
+
+
+def print_garp_results(df: pd.DataFrame, market: str) -> None:
+    console.print(
+        f"\n[bold]GARP[/bold] screen on [cyan]{market.upper()}[/cyan] — "
+        f"showing {len(df)}\n"
+    )
+    columns = [
+        "name",
+        "description",
+        "garp_score",
+        "peg",
+        "sales",
+        "sales_growth_5y",
+        "operating_profit_growth",
+        "eps_growth_5y",
+        "roe_5y",
+        "roce_or_roic",
+        "quarterly_profit_growth",
+    ]
+    columns = [col for col in columns if col in df.columns]
+    table = Table(show_header=True, header_style="bold", show_lines=False)
+    for col_name in columns:
+        label = COLUMN_LABELS.get(col_name, col_name)
+        justify = "right" if col_name in RIGHT_ALIGN else "left"
+        if col_name == "description":
+            table.add_column(label, justify=justify, min_width=12, max_width=22)
+        elif col_name == "name":
+            table.add_column(label, justify=justify, min_width=8, no_wrap=True)
+        else:
+            table.add_column(label, justify=justify, no_wrap=True)
+    for _, row in df.iterrows():
+        table.add_row(*[_format_value(col, row[col]) for col in columns])
+    console.print(table)
 
 
 _INSIDER_INDIA_COLUMNS = [

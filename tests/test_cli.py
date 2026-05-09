@@ -37,6 +37,7 @@ def test_package_cli_matches_main_wrapper():
     for command in [
         "screen",
         "rs-breakout",
+        "garp",
         "promoter-buys",
         "unusual-volume",
         "backtest-historical",
