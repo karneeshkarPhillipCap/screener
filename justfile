@@ -18,6 +18,34 @@ help-screen:
 help-backtest:
     @{{python}} main.py backtest-historical --help
 
+# Show rolling backtest command help.
+help-backtest-rolling:
+    @{{python}} main.py backtest-rolling --help
+
+# Show backtest lab command help.
+help-backtest-lab:
+    @{{python}} main.py backtest-lab --help
+
+# Show GARP command help.
+help-garp:
+    @{{python}} main.py garp --help
+
+# Show promoter/insider buys command help.
+help-promoter-buys:
+    @{{python}} main.py promoter-buys --help
+
+# Show RS breakout command help.
+help-rs-breakout:
+    @{{python}} main.py rs-breakout --help
+
+# Show operator scan command help.
+help-operator-scan:
+    @{{python}} main.py operator-scan --help
+
+# Show optimize command help.
+help-optimize:
+    @{{python}} main.py optimize --help
+
 # Show standalone Pine strategy runner help.
 help-pine:
     @{{python}} run_pinescript_strategies.py --help
@@ -37,6 +65,14 @@ screen-india *args:
 # Run historical backtesting. Requires --as-of plus --entry/--strategy and a universe.
 backtest *args:
     @{{python}} main.py backtest-historical "$@"
+
+# Run a true daily rolling backtest over a date window.
+backtest-rolling *args:
+    @{{python}} main.py backtest-rolling "$@"
+
+# Launch a browser UI for comparing rolling backtest strategies.
+backtest-lab *args:
+    @{{python}} main.py backtest-lab "$@"
 
 # Live US historical backtest smoke run.
 backtest-smoke-us:
@@ -61,6 +97,30 @@ pine-india *args:
 # Detect unusual-volume events. Example: just unusual-volume -m us --tickers AAPL,MSFT
 unusual-volume *args:
     @{{python}} main.py unusual-volume "$@"
+
+# Find GARP stocks using market-specific fundamental data.
+garp *args:
+    @{{python}} main.py garp "$@"
+
+# Find stocks where promoter/insider holding has increased.
+promoter-buys *args:
+    @{{python}} main.py promoter-buys "$@"
+
+# Screen stocks for RS + SuperTrend + breakout/volume setups.
+rs-breakout *args:
+    @{{python}} main.py rs-breakout "$@"
+
+# Run the NSE Operator Intent screener.
+operator-scan *args:
+    @{{python}} main.py operator-scan "$@"
+
+# Optimize and validate backtest parameters. Example: just optimize grid --help
+optimize *args:
+    @{{python}} main.py optimize "$@"
+
+# Show successful feature usage counts from Turso.
+usage-report:
+    @{{python}} main.py usage-report
 
 # Show unusual-volume command help.
 help-unusual-volume:
