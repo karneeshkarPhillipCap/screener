@@ -21,10 +21,6 @@ NAMED_STRATEGIES: dict[str, NamedStrategy] = {
         entry="close >= highest(close, 252) * 0.9 and volume > sma(volume, 10)",
         exit=None,
     ),
-    "golden_cross": NamedStrategy(
-        entry="crossover(sma(close, 50), sma(close, 200))",
-        exit="crossunder(sma(close, 50), sma(close, 200))",
-    ),
     "rs_breakout": NamedStrategy(
         entry="rs_breakout_entry > 0",
         exit=None,
