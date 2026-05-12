@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from screener.indicators.numpy import _sma, _stdev
+from screener.indicators.numpy import _bb
 from screener.strategies.spec import strategy
 from screener.strategies.trades import Trade, _walk
 
@@ -13,9 +13,7 @@ from screener.strategies.trades import Trade, _walk
 @strategy("bb_breakout")
 def strat_bb_breakout(df: pd.DataFrame) -> list[Trade]:
     close = df["close"].to_numpy(dtype=float)
-    s = _sma(close, 350)
-    sd = _stdev(close, 350)
-    upper = s + 2.5 * sd
+    _, s, upper = _bb(close, 350, 2.5)
     cp = np.concatenate(([close[0]], close[:-1]))
     up = np.concatenate(([upper[0]], upper[:-1]))
     sp = np.concatenate(([s[0]], s[:-1]))

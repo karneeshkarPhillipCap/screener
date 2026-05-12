@@ -9,6 +9,7 @@ prefixed names as re-exports so existing imports keep working.
 from __future__ import annotations
 
 from screener.indicators.plugins.atr import atr as _atr
+from screener.indicators.plugins.bollinger_bands import bollinger_bands as _bb
 from screener.indicators.plugins.ema import ema as _ema
 from screener.indicators.plugins.rma import rma as _rma
 from screener.indicators.plugins.rsi import rsi as _rsi
@@ -18,6 +19,7 @@ from screener.indicators.plugins.supertrend import supertrend_dir as _supertrend
 
 __all__ = [
     "_atr",
+    "_bb",
     "_ema",
     "_rma",
     "_rsi",
