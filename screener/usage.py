@@ -8,9 +8,10 @@ import logging
 import os
 import platform
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+
+from pydantic import BaseModel, ConfigDict, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +35,25 @@ class UsageClient(Protocol):
     def close(self) -> None: ...
 
 
-@dataclass(frozen=True)
-class UsageCount:
+class UsageCount(BaseModel):
     feature: str
     count: int
     last_used_at: str | None
 
+    model_config = ConfigDict(frozen=True)
 
-@dataclass(frozen=True)
-class InvocationRollup:
+    @field_validator("feature")
+    @classmethod
+    def _normalize_feature(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("feature must not be empty")
+        return normalized
+
+
+class InvocationRollup(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     feature: str
     market: str
     criteria: str

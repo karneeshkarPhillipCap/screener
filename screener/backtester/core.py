@@ -17,7 +17,7 @@ from screener.backtester.portfolio import Portfolio
 from screener.backtester.slippage import Side, apply_slippage
 
 
-@dataclass
+@dataclass(frozen=True)
 class _SimOutcome:
     trade: Optional[Trade]
     warning: Optional[str]
@@ -356,7 +356,7 @@ def simulate_ticker(
         if exit_ is not None:
             fill, reason = exit_
             return _SimOutcome(
-                _make_exit(
+                trade=_make_exit(
                     state.entry_date,
                     state.entry_fill,
                     bars.index[i].date(),
@@ -364,7 +364,7 @@ def simulate_ticker(
                     reason,
                     signal_idx_bar=state.signal_date,
                 ),
-                None,
+                warning=None,
             )
 
     last_bar = bars.iloc[-1]
@@ -376,7 +376,7 @@ def simulate_ticker(
         sigma_daily=state.sigma_daily,
     )
     return _SimOutcome(
-        _make_exit(
+        trade=_make_exit(
             state.entry_date,
             state.entry_fill,
             bars.index[-1].date(),
@@ -384,7 +384,7 @@ def simulate_ticker(
             "eod",
             signal_idx_bar=state.signal_date,
         ),
-        None,
+        warning=None,
     )
 
 

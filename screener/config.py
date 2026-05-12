@@ -4,13 +4,49 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import click
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 import yaml  # type: ignore[import-untyped]
 
 
 ConfigMap = dict[str, Any]
+
+
+class CliConfig(BaseModel):
+    log_level: str | None = None
+    log_json: bool | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_payload(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            raise ValueError("Config file must contain a top-level mapping.")
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("Config file keys must be strings.")
+        return value
+
+    @field_validator("log_level")
+    @classmethod
+    def _normalize_log_level(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("log_level must not be empty.")
+        return normalized
+
+    def to_click_default_map(self) -> ConfigMap:
+        return self.model_dump(exclude_none=True, mode="python")
 
 
 def load_config(path: str | Path) -> ConfigMap:
@@ -38,8 +74,8 @@ def load_config(path: str | Path) -> ConfigMap:
             f"Could not load config file {config_path}: {exc}"
         ) from exc
 
-    if not isinstance(loaded, dict):
-        raise click.UsageError("Config file must contain a top-level mapping.")
-    if not all(isinstance(key, str) for key in loaded):
-        raise click.UsageError("Config file keys must be strings.")
-    return cast(ConfigMap, loaded)
+    try:
+        return CliConfig.model_validate(loaded).to_click_default_map()
+    except ValidationError as exc:
+        message = exc.errors()[0]["msg"] if exc.errors() else str(exc)
+        raise click.UsageError(message) from exc
