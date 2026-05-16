@@ -588,10 +588,8 @@ def _force_close_open_slots(
             continue
         bars = slot_bars[slot_id]
         tail = bars.loc[
-            (bars.index > pd.Timestamp(state.entry_date)) & (bars.index <= end_ts)
+            (bars.index >= pd.Timestamp(state.entry_date)) & (bars.index <= end_ts)
         ]
-        if tail.empty:
-            tail = bars.loc[bars.index > pd.Timestamp(state.entry_date)]
         if tail.empty:
             continue
         last_bar = tail.iloc[-1]
