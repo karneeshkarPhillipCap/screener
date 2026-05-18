@@ -1,7 +1,7 @@
 """Rendering helpers for unusual-volume events.
 
 Three output sinks: rich table to stdout, JSON file (full schema), and
-Markdown summary. Mirrors the pattern in ``scan_today.py``.
+Markdown summary.
 """
 
 from __future__ import annotations

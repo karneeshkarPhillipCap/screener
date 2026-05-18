@@ -13,4 +13,12 @@ _*.txt
 matrix_*.txt
 .env
 .screener/
-.screener/
+
+# Generated local reports
+*.html
+*_report_*.md
+picks_today.json
+picks_today.md
+buy_recommendations.md
+journal.jsonl
+.benchmarks/

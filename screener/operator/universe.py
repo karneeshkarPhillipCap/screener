@@ -36,7 +36,7 @@ def cash_top_500() -> list[str]:
     """Top-500 NSE cash names by volume (price-floored).
 
     Reuses the existing universe loader so the operator screener stays in
-    sync with the autoresearch / scan_today.py pick pipeline.
+    sync with the existing backtester universe selection.
     """
     from run_pinescript_strategies import load_universe
 
