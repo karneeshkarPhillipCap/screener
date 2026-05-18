@@ -8,6 +8,7 @@ high, and NSE delivery bhavcopy data.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
@@ -25,6 +26,7 @@ from screener.backtester.data import PriceFetcher, tv_to_yf
 from screener.unusual_volume.delivery import load_delivery_panel
 
 
+logger = logging.getLogger(__name__)
 DEFAULT_BENCHMARK = "^NSEI"
 DEFAULT_BENCHMARKS = {"india": "^NSEI", "us": "SPY"}
 RS_WINDOW = 55
@@ -405,12 +407,14 @@ def _delivery_series_for_symbol(
     symbol: str,
     index: pd.DatetimeIndex,
 ) -> pd.DataFrame:
-    empty = pd.DataFrame(
-        {
-            "delivery_pct": pd.Series(np.nan, index=index, dtype=float),
-            "previous_delivery_pct": pd.Series(np.nan, index=index, dtype=float),
-        }
+    cols = (
+        "delivery_pct",
+        "previous_delivery_pct",
+        "delivery_pct_last",
+        "delivery_trend",
+        "delivery_spike",
     )
+    empty = pd.DataFrame({c: pd.Series(np.nan, index=index, dtype=float) for c in cols})
     if panel is None or panel.empty:
         return empty
     sym = india_symbol(symbol)
@@ -424,10 +428,17 @@ def _delivery_series_for_symbol(
         .drop_duplicates(subset=["date"], keep="last")
     )
     delivery_pct = pd.to_numeric(rows["DELIV_PER"], errors="coerce")
+    sma20 = delivery_pct.rolling(20, min_periods=5).mean()
+    std20 = delivery_pct.rolling(20, min_periods=5).std(ddof=0)
+    trend = delivery_pct / sma20.replace(0.0, np.nan)
+    spike = (delivery_pct - sma20) / std20.replace(0.0, np.nan)
     series = pd.DataFrame(
         {
             "delivery_pct": delivery_pct.to_numpy(dtype=float),
             "previous_delivery_pct": delivery_pct.shift(1).to_numpy(dtype=float),
+            "delivery_pct_last": delivery_pct.to_numpy(dtype=float),
+            "delivery_trend": trend.to_numpy(dtype=float),
+            "delivery_spike": spike.to_numpy(dtype=float),
         },
         index=pd.DatetimeIndex(rows["date"]),
     )
@@ -464,6 +475,9 @@ def build_signal_frame(
     out["previous_week_high"] = prev_week_high
     out["delivery_pct"] = delivery["delivery_pct"]
     out["previous_delivery_pct"] = delivery["previous_delivery_pct"]
+    out["delivery_pct_last"] = delivery["delivery_pct_last"]
+    out["delivery_trend"] = delivery["delivery_trend"]
+    out["delivery_spike"] = delivery["delivery_spike"]
     base_pass = (
         (out["rs_55"] > 0)
         & (out["close"].astype(float) > out["supertrend_value"])
@@ -505,7 +519,73 @@ def prepare_backtest_frames(
             symbol=symbol,
             require_delivery=require_delivery,
         )
+    if market == "india":
+        _join_microstructure_panels(prepared)
     return prepared
+
+
+def _join_microstructure_panels(prepared: dict[str, pd.DataFrame]) -> None:
+    """Left-join accumulated option-chain / FII-DII snapshot panels as feature
+    columns. These live-only sources have no historical backfill, so columns
+    are NaN for dates before the daily snapshot accumulation began —
+    strategies referencing them simply don't trigger on those bars. Read-only,
+    keeps backtests offline/deterministic.
+    """
+    from screener.cache import panel_path, read_frame
+    from screener.unusual_volume.fii_dii import fii_dii_metric_series
+
+    oc = read_frame(panel_path("option_chain"))
+    fd = read_frame(panel_path("fii_dii"))
+    oc_by_sym: dict[str, pd.DataFrame] = {}
+    if oc is not None and not oc.empty:
+        oc = oc.copy()
+        oc["as_of"] = pd.to_datetime(oc["as_of"], errors="coerce").dt.normalize()
+        for sym, grp in oc.groupby(oc["SYMBOL"].astype(str).str.upper()):
+            oc_by_sym[sym] = grp.set_index("as_of").sort_index()
+    if fd is not None and not fd.empty:
+        fd = fd.copy()
+        fd = fii_dii_metric_series(fd)
+    for symbol, frame in prepared.items():
+        if frame is None or frame.empty:
+            continue
+        sym = india_symbol(symbol)
+        target_index = pd.DatetimeIndex(
+            pd.to_datetime(pd.Index(frame.index), errors="coerce")
+        )
+        if target_index.tz is not None:
+            target_index = target_index.tz_localize(None)
+        target_index = target_index.normalize()
+        g = oc_by_sym.get(sym)
+        # One-bar lag: the FII/DII provisional figure (and the option-chain
+        # snapshot) is only published after market close, so a same-day
+        # intraday/open decision must not see today's value. Shift the
+        # reindexed series by one trading bar so each bar only sees the prior
+        # day's accumulated snapshot. Cold-start bars stay NaN (shift fills
+        # the leading bar with NaN, matching the missing-history contract).
+        for col in ("call_put_oi_ratio", "pcr"):
+            if g is not None and col in g.columns:
+                joined = g[col].reindex(target_index).shift(1)
+                frame[col] = pd.Series(joined.to_numpy(dtype=float), index=frame.index)
+                if g[col].notna().any() and frame[col].notna().sum() == 0:
+                    logger.debug(
+                        "option-chain panel for %s joined zero non-NaN %s rows",
+                        sym,
+                        col,
+                    )
+            else:
+                frame[col] = np.nan
+        for col in ("fii_5d_net", "dii_5d_net", "fii_trend"):
+            if fd is not None and not fd.empty and col in fd.columns:
+                joined = fd[col].reindex(target_index).shift(1)
+                frame[col] = pd.Series(joined.to_numpy(dtype=float), index=frame.index)
+                if fd[col].notna().any() and frame[col].notna().sum() == 0:
+                    logger.debug(
+                        "FII/DII panel for %s joined zero non-NaN %s rows",
+                        sym,
+                        col,
+                    )
+            else:
+                frame[col] = np.nan
 
 
 def render_result(
