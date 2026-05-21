@@ -10,6 +10,7 @@ from screener import insiders as insiders_module
 from screener.insiders import (
     _aggregate_fmp_transactions,
     _fetch_fmp_insider_one,
+    _row_value,
     filter_promoter_increased,
 )
 
@@ -48,6 +49,12 @@ def test_aggregate_nets_buys_against_sells_within_window():
         "fmp_buy_trans_6m": 2,
         "fmp_sell_trans_6m": 1,
     }
+
+
+def test_row_value_returns_none_when_yfinance_schema_is_missing_label_column():
+    df = pd.DataFrame({"Breakdown": ["Net Shares Purchased (Sold)"], "Shares": [10]})
+
+    assert _row_value(df, "Net Shares Purchased (Sold)", "Shares") is None
 
 
 def test_aggregate_excludes_transactions_outside_window():

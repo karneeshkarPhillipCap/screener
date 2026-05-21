@@ -14,7 +14,10 @@ def resolve_strategy_exprs(strategy_name, entry_expr, exit_expr):
     from screener.backtester.strategies import resolve_strategy
 
     if strategy_name:
-        strategy = resolve_strategy(strategy_name)
+        try:
+            strategy = resolve_strategy(strategy_name)
+        except KeyError as exc:
+            raise click.UsageError(str(exc)) from exc
         entry_expr = entry_expr or strategy.entry
         exit_expr = exit_expr or strategy.exit
     if not entry_expr:

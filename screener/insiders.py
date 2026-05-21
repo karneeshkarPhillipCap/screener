@@ -59,6 +59,12 @@ def _tv_to_yf(ticker: str, market: str) -> str:
 def _row_value(df: pd.DataFrame, label: str, column: str) -> Optional[float]:
     if df is None or df.empty:
         return None
+    if "Insider Purchases Last 6m" not in df.columns:
+        logger.debug(
+            "yfinance insider purchases payload missing label column; columns=%s",
+            list(df.columns),
+        )
+        return None
     match = df[df["Insider Purchases Last 6m"] == label]
     if match.empty:
         return None

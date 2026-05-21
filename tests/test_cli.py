@@ -116,6 +116,22 @@ def test_rolling_backtest_rejects_csv_with_dashboard():
     assert "--csv and --dashboard cannot be used together" in res.output
 
 
+def test_rolling_backtest_unknown_strategy_is_usage_error():
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-rolling",
+            "--tickers",
+            "AAA",
+            "--strategy",
+            "sma_cross",
+        ],
+    )
+
+    assert res.exit_code != 0
+    assert "Unknown strategy 'sma_cross'" in res.output
+
+
 def test_backtest_lab_help_lists_server_flags():
     res = CliRunner().invoke(cli, ["backtest-lab", "--help"])
 
