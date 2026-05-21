@@ -85,16 +85,18 @@ def _passes_entry_filters(
     """Check min-price and liquidity filters against history up to ``as_of_ts``."""
     if cfg.min_price is None and cfg.min_avg_dollar_volume is None:
         return True, None
-    history = bars.loc[bars.index <= as_of_ts]
-    if history.empty:
+    # bars.index is a sorted DatetimeIndex; use searchsorted for O(log n) lookup.
+    pos = bars.index.searchsorted(as_of_ts, side="right")
+    if pos <= 0:
         return False, "no history"
-    last = history.iloc[-1]
+    last = bars.iloc[pos - 1]
     close = float(last["close"])
     if cfg.min_price is not None and close < cfg.min_price:
         return False, f"price {close:.4f} < {cfg.min_price}"
     if cfg.min_avg_dollar_volume is not None:
         window = max(int(cfg.avg_dollar_volume_window), 1)
-        tail = history.tail(window)
+        start = max(0, pos - window)
+        tail = bars.iloc[start:pos]
         if tail.empty:
             return False, "no volume history"
         adv = float((tail["close"] * tail["volume"]).mean())
@@ -509,10 +511,11 @@ def _eligible_reserve_signal_idx(
 
 
 def _bar_index_on_or_before(bars: pd.DataFrame, day: pd.Timestamp) -> Optional[int]:
-    mask = bars.index <= day
-    if not mask.any():
+    # ``bars.index`` is a sorted DatetimeIndex; searchsorted is O(log n).
+    pos = bars.index.searchsorted(day, side="right")
+    if pos <= 0:
         return None
-    return int(np.where(mask)[0][-1])
+    return int(pos - 1)
 
 
 def _active_or_pending_tickers(
@@ -535,6 +538,38 @@ def _precompute_entry_signals(
         except PineError as exc:
             warnings.append(f"entry eval failed: {ticker}: {exc}")
     return signals
+
+
+def _precompute_filter_signals(
+    bars_by_ticker: dict[str, pd.DataFrame],
+    cfg: BacktestConfig,
+) -> dict[str, pd.Series]:
+    """Per-ticker boolean Series: True when min-price + ADV filters pass on that bar.
+
+    Returns an empty dict (treated as a sentinel meaning "no filters configured")
+    when both ``cfg.min_price`` and ``cfg.min_avg_dollar_volume`` are ``None`` —
+    callers should fall back to the per-call behaviour in that case.
+    """
+    if cfg.min_price is None and cfg.min_avg_dollar_volume is None:
+        return {}
+    window = max(int(cfg.avg_dollar_volume_window), 1)
+    out: dict[str, pd.Series] = {}
+    for ticker, bars in bars_by_ticker.items():
+        if bars is None or bars.empty:
+            continue
+        close = bars["close"].astype(float)
+        passes = pd.Series(True, index=bars.index)
+        if cfg.min_price is not None:
+            passes &= close >= float(cfg.min_price)
+        if cfg.min_avg_dollar_volume is not None:
+            volume = bars["volume"].astype(float)
+            dollar_vol = close * volume
+            adv = dollar_vol.rolling(window=window, min_periods=1).mean()
+            # NaN (or +-inf) ADV must fail the filter.
+            adv_ok = np.isfinite(adv.values) & (adv.values >= float(cfg.min_avg_dollar_volume))
+            passes &= pd.Series(adv_ok, index=bars.index)
+        out[ticker] = passes.astype(bool)
+    return out
 
 
 def _close_slot_at_day(

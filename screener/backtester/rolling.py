@@ -25,6 +25,7 @@ from screener.backtester.core import (
     _make_slot_state,
     _passes_entry_filters,
     _precompute_entry_signals,
+    _precompute_filter_signals,
     _prepare_strategy_bars,
     _resolve_universe,
 )
@@ -45,29 +46,40 @@ def _candidate_rows_for_day(
     cfg: BacktestConfig,
     *,
     exclude: set[str],
+    filter_signals_by_ticker: dict[str, pd.Series] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Evaluate entry signals for the full universe on one trading day."""
     rows: list[dict] = []
     warnings: list[str] = []
+    # ``filter_signals_by_ticker`` carries precomputed min-price + ADV filters.
+    # An empty dict is the sentinel for "no filters configured" — fall back to
+    # the per-call helper to preserve the historical/legacy semantics.
+    filters_configured = bool(filter_signals_by_ticker)
     for ticker, bars in bars_by_ticker.items():
         if ticker in exclude or bars is None or bars.empty:
             continue
         signal_idx = _bar_index_on_or_before(bars, day)
         if signal_idx is None or signal_idx + 1 >= len(bars):
             continue
-        history = bars.iloc[: signal_idx + 1]
-        if len(history) < lookback_required + 1:
+        if signal_idx + 1 < lookback_required + 1:
             continue
-        passes, _ = _passes_entry_filters(bars, day, cfg)
-        if not passes:
-            continue
+        if filters_configured:
+            filter_series = filter_signals_by_ticker.get(ticker)
+            if filter_series is None or signal_idx >= len(filter_series):
+                continue
+            if not bool(filter_series.iat[signal_idx]):
+                continue
+        elif filter_signals_by_ticker is None:
+            passes, _ = _passes_entry_filters(bars, day, cfg)
+            if not passes:
+                continue
         signal = entry_signals_by_ticker.get(ticker)
         if signal is None or signal.empty or day not in signal.index:
             continue
         last = signal.loc[day]
         if pd.isna(last) or not bool(last):
             continue
-        last_bar = history.iloc[-1]
+        last_bar = bars.iloc[signal_idx]
         close = float(last_bar["close"])
         volume = float(last_bar["volume"])
         rows.append(
@@ -133,6 +145,7 @@ def run_rolling_backtest(
     )
     lookback = max(lookback, strategy_lookback)
     entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
+    filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
 
     day_set: set[pd.Timestamp] = set()
     for bars in bars_by_tv.values():
@@ -192,6 +205,7 @@ def run_rolling_backtest(
             lookback,
             cfg,
             exclude=_active_or_pending_tickers(slot_states),
+            filter_signals_by_ticker=filter_signals_by_tv,
         )
         warnings.extend(day_warnings)
         if not candidates:
