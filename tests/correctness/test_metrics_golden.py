@@ -111,23 +111,24 @@ def test_vol_annual_golden():
 # ---------------------------------------------------------------------------
 
 def test_cagr_linear_equity_one_year_golden():
-    """_cagr(linspace(100, 200, 252)) = 1.0.
+    """_cagr(equity over 253 points) = 1.0.
 
-    Derivation:
-        years = len(equity) / 252 = 252 / 252 = 1
+    Derivation (annualize over elapsed return periods, N-1):
+        253 points span 252 daily returns → years = (253-1)/252 = 1
         (200 / 100) ^ (1 / 1) - 1 = 2 - 1 = 1.0
     """
-    equity = pd.Series(np.linspace(100.0, 200.0, 252))
+    equity = pd.Series(np.linspace(100.0, 200.0, 253))
     assert abs(_cagr(equity) - 1.0) < 1e-12
 
 
 def test_cagr_two_year_equity_golden():
-    """_cagr(linspace(100, 200, 505)) matches arithmetic formula for 505/252 years.
+    """_cagr(linspace(100, 200, 505)) matches the elapsed-periods formula.
 
-    years = 505/252; (200/100)^(252/505) - 1
+    505 points span 504 daily returns → years = 504/252 = 2
+        (200/100)^(1/2) - 1 = sqrt(2) - 1
     """
     equity = pd.Series(np.linspace(100.0, 200.0, 505))
-    years = 505 / 252
+    years = (505 - 1) / 252
     expected = (200.0 / 100.0) ** (1.0 / years) - 1.0
     assert abs(_cagr(equity) - expected) < 1e-12
 
@@ -186,20 +187,23 @@ def test_max_drawdown_matches_empyrical_on_random_equity():
 # _calmar golden
 # ---------------------------------------------------------------------------
 
-def test_calmar_is_cagr_over_abs_max_drawdown():
-    """_calmar(equity) = _cagr(equity) / |_max_drawdown(equity)|.
+def test_calmar_matches_empyrical_oracle():
+    """_calmar(equity) agrees with empyrical.calmar_ratio(returns).
 
-    Re-derived from first principles: calmar == cagr/abs(mdd) when mdd < 0.
+    Independent oracle (not a self-composition): empyrical computes Calmar as
+    annual_return / |max_drawdown| straight from the returns series. After the
+    CAGR off-by-one fix, screener _cagr and _max_drawdown both match empyrical,
+    so _calmar matches empyrical's Calmar too.
     """
+    import empyrical
+
     rng = np.random.default_rng(7)
     returns = pd.Series(rng.normal(0.001, 0.01, 252))
     equity = pd.Series(np.concatenate([[100.0], 100.0 * np.cumprod(1.0 + returns.values)]))
 
-    cagr = _cagr(equity)
-    mdd = _max_drawdown(equity)
-    expected = cagr / abs(mdd)
-
-    assert abs(_calmar(equity) - expected) < 1e-12
+    screener = _calmar(equity)
+    emp = empyrical.calmar_ratio(returns)
+    assert abs(screener - emp) < 1e-9, f"_calmar {screener} != empyrical {emp}"
 
 
 def test_calmar_returns_zero_when_no_drawdown():

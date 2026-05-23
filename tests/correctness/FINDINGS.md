@@ -28,21 +28,25 @@ TA-Lib is present on this machine, so its witness tests run locally; they are ga
 
 ---
 
-## 1. Genuine candidate bug
+## 1. Bug found and fixed
 
-### CAGR off-by-one — `metrics.py::_cagr`
-`years = len(equity) / 252`. A correctly built equity curve has **N+1 points for N
-return observations** (`[start, start·(1+r₀), …]`), so the annualization horizon is
-always inflated by one bar, which **systematically under-reports CAGR**.
+### CAGR off-by-one — `metrics.py::_cagr` ✅ FIXED
+The annualization horizon used `years = len(equity) / 252`. A correctly built equity
+curve has **N points for N−1 return periods** (`[start, start·(1+r₀), …]`), so the
+horizon was inflated by one bar, which **systematically under-reported CAGR**.
 
-- Screener (253-point equity): `years = 253/252 ≈ 1.004`
-- empyrical `cagr(returns)` (252 returns): `years = 252/252 = 1.000`
-- Confirmed divergence on a sample equity curve (≈0.28657 vs ≈0.28721); magnitude scales
-  with total return and exceeds 1e-5 for any non-trivial curve.
-
-**Recommendation:** use `(len(equity) - 1) / 252`. Verified by
-`test_metrics_vs_empyrical.py` and pinned by `test_metrics_golden.py`
-(`linspace(100,200,252)` → screener treats it as >1 year by one bar).
+- Before: screener (253-point equity) used `years = 253/252 ≈ 1.004`; empyrical
+  `cagr(returns)` (252 returns) used `years = 252/252 = 1.000` → divergence ≈3.4e-5 on a
+  sample curve, scaling with total return.
+- **Fix applied:** `years = max((len(equity) - 1) / 252, 1e-9)`. Screener `_cagr` now
+  agrees with `empyrical.cagr` to <1e-9.
+- Tests updated to lock the corrected behavior:
+  `test_metrics_vs_empyrical.py::test_cagr_matches_empyrical_after_off_by_one_fix`
+  (asserts agreement, formerly asserted divergence) and the
+  `test_metrics_golden.py` CAGR goldens (annualize over N−1).
+- Blast radius checked: only `tests/test_engine.py` asserts a backtest CAGR, with
+  `abs=0.01` tolerance — the ~1/N shift stays well within it. The vbt `calmar` columns
+  are computed by vectorbt, not by `_cagr`, so they are unaffected.
 
 ---
 
@@ -119,6 +123,31 @@ These matched a trusted external reference (not the code's own port) within stat
 - **Data layer** — NaN-OHLCV drop (+ cache re-drop), dedupe-by-date keep-last, tz-naive
   index, `tv_to_yf` mapping table, NSE bhavcopy `SERIES=='EQ'` / F&O `FinInstrmTp=='STF'`
   filters, `_parse_bhavcopy_date` dayfirst — all verified offline against pinned inputs.
+
+---
+
+## 5. Independent review & hardening
+
+The suite was re-reviewed by an independent agent (Codex/gpt-5.5) tasked with finding
+**fake-independence** (expected value produced by the code under test) and **vacuous**
+assertions. It confirmed the CAGR bug, found **no misclassifications** and **no vacuous
+tests**, and flagged a few weak-independence spots — two of which were tightened:
+
+- **Calmar** — `test_calmar_*` previously asserted `_calmar == _cagr/|_max_drawdown|`,
+  pure self-composition (would have passed even with the CAGR bug). Now compared against
+  the external `empyrical.calmar_ratio` oracle (exact match post-fix).
+- **PSR/DSR witness** — `_scipy_psr` previously called `metrics._sharpe` to get the
+  per-period Sharpe, contaminating every PSR/DSR "independent" check. It now computes
+  `mean/std(ddof=0)` directly, so the witness cannot inherit a Sharpe regression.
+
+Acknowledged limitations (kept by design, no external oracle exists):
+- **Scoring** (`test_scoring.py`) is *source-derived specification*, not an external
+  oracle — the screener's setup/GARP weights are bespoke, so the tests pin hand-computed
+  values from the documented formulas. They catch regressions but are not proof of
+  "correct by an outside standard."
+- **Cross-engine Sharpe** is asserted only as finite/positive with a <100% gap; the two
+  engines annualize over different windows. The test's real teeth are the per-trade
+  price matches (`rtol=1e-9`) and `total_return` (`rtol=1e-3`, actual <1e-10).
 
 ---
 

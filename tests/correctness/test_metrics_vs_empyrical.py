@@ -15,12 +15,10 @@ comments for the derivation):
    < empyrical:
        screener_vol = empyrical_vol * sqrt((N-1) / N)
 
-3. CAGR OFF-BY-ONE — screener `_cagr(equity)` uses `years = len(equity)/252`;
-   empyrical `annual_return(returns)` uses `years = len(returns)/252`.
-   When the equity curve has N+1 bars for N return observations (the normal
-   construction), screener uses one more bar → slightly lower annualized
-   exponent → diverges from empyrical.  Classified: CANDIDATE BUG / design
-   ambiguity (see test body for details).
+3. CAGR — off-by-one FIXED.  An N-point equity curve spans N-1 return periods,
+   so `_cagr` now annualizes over `(len(equity)-1)/252`, matching empyrical's
+   `len(returns)/252`.  The previous `len(equity)/252` overstated the horizon by
+   one bar and understated CAGR; screener and empyrical now agree to <1e-9.
 
 4. SORTINO — screener divides by std(downside_only, ddof=0); empyrical uses
    RMS(min(r, 0)) over ALL N observations.  Not a scalar factor → values are
@@ -144,34 +142,37 @@ def test_vol_annual_less_than_empyrical_by_sqrt_n_minus_1_over_n(sample_returns:
 
 
 # ---------------------------------------------------------------------------
-# 3. CAGR off-by-one (candidate bug documentation)
+# 3. CAGR — off-by-one FIXED: screener now annualizes over N-1 return periods
 # ---------------------------------------------------------------------------
 
-def test_cagr_screener_matches_len_equity_formula(sample_equity: pd.Series):
-    """Screener _cagr(equity) uses years = len(equity)/252 — pin this exactly."""
+def test_cagr_screener_uses_elapsed_periods_formula(sample_equity: pd.Series):
+    """Screener _cagr(equity) annualizes over (len(equity)-1)/252 — pin exactly.
+
+    An N-point equity curve spans N-1 daily returns, so the horizon is
+    (N-1)/252 years. (Previously this used len(equity)/252, an off-by-one bug
+    that understated CAGR; now fixed in metrics._cagr.)
+    """
     start = float(sample_equity.iloc[0])
     end = float(sample_equity.iloc[-1])
-    years = len(sample_equity) / 252  # = 253/252 for standard construction
+    years = (len(sample_equity) - 1) / 252  # elapsed return periods
     expected = (end / start) ** (1.0 / years) - 1.0
 
     screener = _cagr(sample_equity)
     assert abs(screener - expected) < 1e-12, (
-        f"screener CAGR {screener} != hand formula {expected}"
+        f"screener CAGR {screener} != elapsed-periods formula {expected}"
     )
 
 
-def test_cagr_diverges_from_empyrical_by_one_bar(
+def test_cagr_matches_empyrical_after_off_by_one_fix(
     sample_equity: pd.Series, sample_returns: pd.Series
 ):
-    """Document CAGR off-by-one: screener uses len(equity), empyrical uses len(returns).
+    """Independent oracle: screener _cagr now AGREES with empyrical.cagr.
 
-    When equity has len(returns)+1 bars (normal construction):
-        screener years = (N+1) / 252
-        empyrical years = N / 252
-    This is a CANDIDATE BUG: the economically correct denominator for a
-    strategy with N daily return observations is N/252, not (N+1)/252.
-    One extra bar in the equity curve dilutes the exponent and reduces the
-    reported CAGR.
+    With equity of len(returns)+1 bars (normal construction) both annualize
+    over N = len(returns) return periods:
+        screener years  = (len(equity)-1) / 252 = N / 252
+        empyrical years =  len(returns)   / 252 = N / 252
+    The previously-documented one-bar divergence is gone after the fix.
     """
     assert len(sample_equity) == len(sample_returns) + 1, (
         "Fixture invariant: equity must have exactly one more bar than returns"
@@ -179,25 +180,18 @@ def test_cagr_diverges_from_empyrical_by_one_bar(
     screener = _cagr(sample_equity)
     emp = empyrical.cagr(sample_returns)
 
-    # They must differ; the magnitude depends on total return but should be visible.
-    assert abs(screener - emp) > 1e-5, (
-        f"Expected divergence > 1e-5 but got {abs(screener - emp):.2e}; "
-        "did the equity fixture change?"
+    # The off-by-one is fixed: screener and empyrical now match the independent
+    # oracle (end/start = prod(1+r) for a properly constructed equity curve).
+    assert abs(screener - emp) < 1e-9, (
+        f"screener CAGR {screener} != empyrical {emp} (diff {abs(screener - emp):.2e})"
     )
 
-    # Screener matches its OWN formula (len(equity)/252) — not empyrical's.
+    # And screener matches the elapsed-periods hand formula.
     start = float(sample_equity.iloc[0])
     end = float(sample_equity.iloc[-1])
-    years_screener = len(sample_equity) / 252
-    screener_formula = (end / start) ** (1.0 / years_screener) - 1.0
+    years = (len(sample_equity) - 1) / 252
+    screener_formula = (end / start) ** (1.0 / years) - 1.0
     assert abs(screener - screener_formula) < 1e-12
-
-    # Empyrical matches the len(returns)/252 formula.
-    years_emp = len(sample_returns) / 252
-    emp_formula = (end / start) ** (1.0 / years_emp) - 1.0
-    # empyrical computes cum_returns_final differently (not from equity ratio),
-    # but end/start = prod(1+r) for properly constructed equity, so they agree.
-    assert abs(emp - emp_formula) < 1e-10
 
 
 # ---------------------------------------------------------------------------

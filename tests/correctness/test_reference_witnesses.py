@@ -32,7 +32,6 @@ from screener.backtester.metrics import (
     _phi,
     _phi_inv,
     _psr,
-    _sharpe,
 )
 
 # Euler–Mascheroni constant (must match metrics.py)
@@ -73,12 +72,17 @@ def _scipy_psr(daily: pd.Series, sr_benchmark_annual: float = 0.0) -> float:
     T = len(daily)
     if T < 30:
         return 0.0
-    sr_per = _sharpe(daily) / math.sqrt(TRADING_DAYS_PER_YEAR)
     sr_bench_per = sr_benchmark_annual / math.sqrt(TRADING_DAYS_PER_YEAR)
-    if daily.std(ddof=0) == 0:
+    std0 = float(daily.std(ddof=0))
+    if std0 == 0:
+        sr_per = 0.0
         skew = 0.0
         kurt_excess = 0.0
     else:
+        # Per-period Sharpe computed INDEPENDENTLY of metrics._sharpe, so this
+        # witness cannot inherit a Sharpe regression: _sharpe just annualizes
+        # by sqrt(252), hence the per-period ratio is mean / std(ddof=0).
+        sr_per = float(daily.mean()) / std0
         skew = float(scipy.stats.skew(daily.values, bias=False))
         kurt_excess = float(scipy.stats.kurtosis(daily.values, fisher=True, bias=False))
     denom_sq = 1.0 - skew * sr_per + (kurt_excess / 4.0) * sr_per**2
