@@ -14,10 +14,7 @@ from screener.strategies.spec import strategy
 
 @strategy(
     "ema20_50_cross_filtered",
-    entry=(
-        "crossover(ema(close, 20), ema(close, 50)) "
-        "and close > ema(close, 200)"
-    ),
+    entry=("crossover(ema(close, 20), ema(close, 50)) and close > ema(close, 200)"),
     exit="crossunder(close, ema(close, 50))",
 )
 def _ema20_50_cross_filtered() -> None:
