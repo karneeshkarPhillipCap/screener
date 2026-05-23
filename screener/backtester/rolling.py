@@ -197,12 +197,15 @@ def run_rolling_backtest(
     entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
     filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
 
-    day_set: set[pd.Timestamp] = set()
+    day_arrays: list[np.ndarray] = []
     for bars in bars_by_tv.values():
         if bars is None or bars.empty:
             continue
-        day_set.update(day for day in bars.index if start_ts <= day <= end_ts)
-    if not day_set:
+        idx = bars.index
+        mask = (idx >= start_ts) & (idx <= end_ts)
+        if mask.any():
+            day_arrays.append(idx[mask].to_numpy())
+    if not day_arrays:
         calendar = pd.bdate_range(start_ts, end_ts)
         equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
         benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
@@ -219,7 +222,7 @@ def run_rolling_backtest(
             selection=pd.DataFrame(),
         )
 
-    master_dates = sorted(day_set)
+    master_dates = list(pd.DatetimeIndex(np.unique(np.concatenate(day_arrays))))
     candidate_matrices = _build_rolling_candidate_matrices(
         bars_by_tv,
         entry_signals_by_tv,

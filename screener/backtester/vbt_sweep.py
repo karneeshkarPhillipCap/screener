@@ -55,7 +55,12 @@ from rich.console import Console
 from rich.table import Table
 
 from screener.backtester.cli_common import DEFAULT_BENCHMARK
-from screener.backtester.data import PriceFetcher, build_price_fetcher, tv_to_yf
+from screener.backtester.data import (
+    PriceFetcher,
+    _naive_normalized_index,
+    build_price_fetcher,
+    tv_to_yf,
+)
 from screener.universes import load_current_universe
 
 DISCLAIMER = (
@@ -333,7 +338,7 @@ def _build_column_panel(
         if frame is None or frame.empty or column not in frame.columns:
             continue
         col = frame[column].astype(float)
-        col.index = pd.to_datetime(col.index).tz_localize(None).normalize()
+        col.index = _naive_normalized_index(col.index)
         trimmed = col.loc[(col.index >= start) & (col.index <= end)]
         if trimmed.empty:
             continue

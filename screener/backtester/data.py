@@ -143,13 +143,29 @@ def _cache_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
     return cache_dir / f"{safe}.parquet"
 
 
+def _naive_normalized_index(idx: pd.Index) -> pd.DatetimeIndex:
+    """Normalize to tz-naive midnight without re-parsing an already-datetime index.
+
+    ``pd.to_datetime()`` on a ``DatetimeIndex`` is a no-op conversion, but its
+    ``should_cache`` heuristic iterates the whole index in Python — the single
+    largest leaf in the sp500 profiles. Skip it when the index is already
+    datetime, and only ``tz_localize`` when actually tz-aware. ``.normalize()``
+    stays (it is vectorized C, not the hotspot).
+    """
+    if not isinstance(idx, pd.DatetimeIndex):
+        idx = pd.to_datetime(idx)
+    if idx.tz is not None:
+        idx = idx.tz_localize(None)
+    return idx.normalize()
+
+
 def _load_cached(ticker: str, cache_dir: Path = CACHE_DIR) -> Optional[pd.DataFrame]:
     p = _cache_path(ticker, cache_dir)
     if not p.exists():
         return None
     try:
         df = pd.read_parquet(p)
-        df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+        df.index = _naive_normalized_index(df.index)
         # Clean NaN-OHLCV rows that older cache writes may have persisted, so a
         # cache hit can't reintroduce the NaN bars that _normalize_frame drops.
         price_cols = [c for c in OHLCV_COLUMNS if c in df.columns]
@@ -203,7 +219,7 @@ def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
         factor = splits.replace(0.0, 1.0)[::-1].cumprod()[::-1].shift(-1).fillna(1.0)
         out["split_factor"] = factor.astype(float)
         out["stock_splits"] = splits
-    out.index = pd.to_datetime(out.index).tz_localize(None).normalize()
+    out.index = _naive_normalized_index(out.index)
     out = out[~out.index.duplicated(keep="last")].sort_index()
     # Drop bars with no valid OHLCV (yfinance emits NaN rows for halts,
     # illiquid/delisting tails, and multi-ticker index-union gaps). These are
@@ -225,7 +241,7 @@ def _merge_cached(existing: Optional[pd.DataFrame], new: pd.DataFrame) -> pd.Dat
         merged = pd.concat([existing, new], axis=0)
     if merged.empty:
         return merged
-    merged.index = pd.to_datetime(merged.index).tz_localize(None).normalize()
+    merged.index = _naive_normalized_index(merged.index)
     return merged[~merged.index.duplicated(keep="last")].sort_index()
 
 
