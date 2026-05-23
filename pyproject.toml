@@ -1,7 +1,7 @@
 [project]
 name = "screener"
 version = "0.1.0"
-description = "Add your description here"
+description = "A Python CLI for screening, ranking, and backtesting US and Indian equities."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

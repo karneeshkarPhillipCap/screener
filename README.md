@@ -1,6 +1,6 @@
 ## Screener
 
-Stock screening, backtesting, and research CLI for US and Indian markets.
+A Python CLI for screening, ranking, and backtesting US and Indian equities with technical, fundamental, relative-strength, unusual-volume, and operator-intent workflows.
 
 Run commands through `uv`:
 
