@@ -31,6 +31,7 @@ from screener.garp import add_garp_score, _passes_garp, INDIA_THRESHOLDS, US_THR
 # Helpers to build minimal DataFrames with neutral column values
 # ---------------------------------------------------------------------------
 
+
 def _neutral_row(**overrides) -> dict:
     """Return a minimal row with columns _add_setup_score reads.
 
@@ -42,11 +43,11 @@ def _neutral_row(**overrides) -> dict:
     base = {
         "close": 100.0,
         "EMA5": 102.0,
-        "EMA20": 100.0,   # extension = (100 - 100) / 100 = 0.0 → penalty 0
+        "EMA20": 100.0,  # extension = (100 - 100) / 100 = 0.0 → penalty 0
         "EMA100": 95.0,
         "EMA200": 90.0,
-        "change": 2.5,    # momentum = (2.5 + 5) / 15 = 0.5
-        "RSI": 60.0,      # rsi_quality = 1.0
+        "change": 2.5,  # momentum = (2.5 + 5) / 15 = 0.5
+        "RSI": 60.0,  # rsi_quality = 1.0
         "volume": 1_000_000.0,
         "market_cap_basic": 1_000_000_000.0,
     }
@@ -58,6 +59,7 @@ def _neutral_row(**overrides) -> dict:
 # _percentile and _log_percentile tests
 # ---------------------------------------------------------------------------
 
+
 class TestLogPercentileMonotonicity:
     """_log_percentile must produce a non-decreasing sequence for sorted input."""
 
@@ -67,10 +69,14 @@ class TestLogPercentileMonotonicity:
         # These are strictly increasing, so rank(pct=True) = [0.2, 0.4, 0.6, 0.8, 1.0]
         series = pd.Series([1, 4, 9, 16, 25], dtype=float)
         result = _log_percentile(series)
-        assert result.is_monotonic_increasing, "log_percentile must be non-decreasing for sorted input"
+        assert result.is_monotonic_increasing, (
+            "log_percentile must be non-decreasing for sorted input"
+        )
         # No ties → strictly increasing → all consecutive diffs > 0
         diffs = result.diff().dropna()
-        assert (diffs > 0).all(), "log_percentile should be strictly increasing for distinct sorted input"
+        assert (diffs > 0).all(), (
+            "log_percentile should be strictly increasing for distinct sorted input"
+        )
 
     def test_single_value_returns_one(self):
         # Single element: rank(pct=True) = 1.0
@@ -97,6 +103,7 @@ class TestLogPercentileMonotonicity:
 # ---------------------------------------------------------------------------
 # rsi_quality component
 # ---------------------------------------------------------------------------
+
 
 class TestRsiQuality:
     """rsi_quality = (1 - abs(rsi - 60) / 40).clip(0, 1).fillna(0)
@@ -147,6 +154,7 @@ class TestRsiQuality:
 # momentum component
 # ---------------------------------------------------------------------------
 
+
 class TestMomentum:
     """momentum = ((change.clip(-5, 10) + 5) / 15).fillna(0)
 
@@ -195,6 +203,7 @@ class TestMomentum:
 # overextension_penalty component
 # ---------------------------------------------------------------------------
 
+
 class TestOverextensionPenalty:
     """overextension_penalty = ((extension - 0.12).clip(lower=0) / 0.25).clip(upper=1)
     where extension = (close - ema20) / ema20
@@ -223,17 +232,21 @@ class TestOverextensionPenalty:
         ema5 = close * 1.02
         ema100 = close * 0.95
         ema200 = close * 0.90
-        df = pd.DataFrame([{
-            "close": close,
-            "EMA5": ema5,
-            "EMA20": ema20,
-            "EMA100": ema100,
-            "EMA200": ema200,
-            "change": 2.5,
-            "RSI": 60.0,
-            "volume": 1_000_000.0,
-            "market_cap_basic": 1_000_000_000.0,
-        }])
+        df = pd.DataFrame(
+            [
+                {
+                    "close": close,
+                    "EMA5": ema5,
+                    "EMA20": ema20,
+                    "EMA100": ema100,
+                    "EMA200": ema200,
+                    "change": 2.5,
+                    "RSI": 60.0,
+                    "volume": 1_000_000.0,
+                    "market_cap_basic": 1_000_000_000.0,
+                }
+            ]
+        )
         result = _add_setup_score(df)
         score = result["setup_score"].iloc[0]
         return (92.5 - score) / 15.0
@@ -268,6 +281,7 @@ class TestOverextensionPenalty:
 # Full setup_score composite (best-case row)
 # ---------------------------------------------------------------------------
 
+
 class TestSetupScoreFullWeighting:
     """Best-case single row: all weighted components at maximum.
 
@@ -285,17 +299,21 @@ class TestSetupScoreFullWeighting:
     """
 
     def test_best_case_score_is_100(self):
-        df = pd.DataFrame([{
-            "close": 100.0,
-            "EMA5": 105.0,   # ema5 > ema20 > ema100 > ema200
-            "EMA20": 100.0,  # extension = (100-100)/100 = 0 → penalty = 0
-            "EMA100": 95.0,
-            "EMA200": 90.0,
-            "change": 10.0,  # momentum = 1.0
-            "RSI": 60.0,     # rsi_quality = 1.0
-            "volume": 1_000_000.0,
-            "market_cap_basic": 1_000_000_000.0,
-        }])
+        df = pd.DataFrame(
+            [
+                {
+                    "close": 100.0,
+                    "EMA5": 105.0,  # ema5 > ema20 > ema100 > ema200
+                    "EMA20": 100.0,  # extension = (100-100)/100 = 0 → penalty = 0
+                    "EMA100": 95.0,
+                    "EMA200": 90.0,
+                    "change": 10.0,  # momentum = 1.0
+                    "RSI": 60.0,  # rsi_quality = 1.0
+                    "volume": 1_000_000.0,
+                    "market_cap_basic": 1_000_000_000.0,
+                }
+            ]
+        )
         result = _add_setup_score(df)
         score = result["setup_score"].iloc[0]
         # 25+30+15+15+10+5-0 = 100.0
@@ -309,17 +327,21 @@ class TestSetupScoreFullWeighting:
                     = 25 + 30 + 0 + 15 + 0 + 5 - 15
                     = 60.0
         """
-        df = pd.DataFrame([{
-            "close": 150.0,  # close = ema20 * 1.5 → extension = 0.5 → penalty = 1.0
-            "EMA5": 155.0,
-            "EMA20": 100.0,
-            "EMA100": 95.0,
-            "EMA200": 90.0,
-            "change": -5.0,  # momentum = 0.0
-            "RSI": 20.0,     # rsi_quality = 0.0
-            "volume": 1_000_000.0,
-            "market_cap_basic": 1_000_000_000.0,
-        }])
+        df = pd.DataFrame(
+            [
+                {
+                    "close": 150.0,  # close = ema20 * 1.5 → extension = 0.5 → penalty = 1.0
+                    "EMA5": 155.0,
+                    "EMA20": 100.0,
+                    "EMA100": 95.0,
+                    "EMA200": 90.0,
+                    "change": -5.0,  # momentum = 0.0
+                    "RSI": 20.0,  # rsi_quality = 0.0
+                    "volume": 1_000_000.0,
+                    "market_cap_basic": 1_000_000_000.0,
+                }
+            ]
+        )
         result = _add_setup_score(df)
         score = result["setup_score"].iloc[0]
         # 25+30+0+15+0+5-15 = 60.0
@@ -346,17 +368,21 @@ class TestSetupScoreFullWeighting:
         assert (score_best - score_mom0) == pytest.approx(15.0, abs=0.01)
 
         # overextension weight: ext=0 (pen=0) vs ext=0.37 (pen=1.0)
-        df_ext = pd.DataFrame([{
-            "close": 137.0,   # ext = (137-100)/100 = 0.37 → penalty=1.0
-            "EMA5": 140.0,
-            "EMA20": 100.0,
-            "EMA100": 95.0,
-            "EMA200": 90.0,
-            "change": 10.0,
-            "RSI": 60.0,
-            "volume": 1_000_000.0,
-            "market_cap_basic": 1_000_000_000.0,
-        }])
+        df_ext = pd.DataFrame(
+            [
+                {
+                    "close": 137.0,  # ext = (137-100)/100 = 0.37 → penalty=1.0
+                    "EMA5": 140.0,
+                    "EMA20": 100.0,
+                    "EMA100": 95.0,
+                    "EMA200": 90.0,
+                    "change": 10.0,
+                    "RSI": 60.0,
+                    "volume": 1_000_000.0,
+                    "market_cap_basic": 1_000_000_000.0,
+                }
+            ]
+        )
         score_ext = _add_setup_score(df_ext)["setup_score"].iloc[0]
         # Penalty went from 0 to 1 → score drops by 15
         assert (score_best - score_ext) == pytest.approx(15.0, abs=0.01)
@@ -365,6 +391,7 @@ class TestSetupScoreFullWeighting:
 # ---------------------------------------------------------------------------
 # GARP scoring: inv_peg component
 # ---------------------------------------------------------------------------
+
 
 class TestGarpInvPeg:
     """inv_peg = (1 - peg.rank(pct=True)).fillna(0)
@@ -379,14 +406,16 @@ class TestGarpInvPeg:
         """Minimal GARP df: only columns that add_garp_score reads."""
         n = len(pegs)
         # Use increasing values for all pct() columns so rank order is known
-        return pd.DataFrame({
-            "peg": pegs,
-            "eps_growth_5y": [10.0 * (i + 1) for i in range(n)],
-            "sales_growth_5y": [10.0 * (i + 1) for i in range(n)],
-            "roe_5y": [10.0 * (i + 1) for i in range(n)],
-            "roce_or_roic": [10.0 * (i + 1) for i in range(n)],
-            "quarterly_profit_growth": [10.0 * (i + 1) for i in range(n)],
-        })
+        return pd.DataFrame(
+            {
+                "peg": pegs,
+                "eps_growth_5y": [10.0 * (i + 1) for i in range(n)],
+                "sales_growth_5y": [10.0 * (i + 1) for i in range(n)],
+                "roe_5y": [10.0 * (i + 1) for i in range(n)],
+                "roce_or_roic": [10.0 * (i + 1) for i in range(n)],
+                "quarterly_profit_growth": [10.0 * (i + 1) for i in range(n)],
+            }
+        )
 
     def test_inv_peg_four_values(self):
         pegs = [0.5, 1.0, 2.0, 4.0]
@@ -418,14 +447,16 @@ class TestGarpPctRank:
     """
 
     def test_pct_rank_four_distinct_values(self):
-        df = pd.DataFrame({
-            "peg": [1.0, 1.5, 2.0, 2.5],   # distinct increasing pegs
-            "eps_growth_5y": [5.0, 10.0, 20.0, 40.0],
-            "sales_growth_5y": [5.0, 10.0, 20.0, 40.0],
-            "roe_5y": [5.0, 10.0, 20.0, 40.0],
-            "roce_or_roic": [5.0, 10.0, 20.0, 40.0],
-            "quarterly_profit_growth": [5.0, 10.0, 20.0, 40.0],
-        })
+        df = pd.DataFrame(
+            {
+                "peg": [1.0, 1.5, 2.0, 2.5],  # distinct increasing pegs
+                "eps_growth_5y": [5.0, 10.0, 20.0, 40.0],
+                "sales_growth_5y": [5.0, 10.0, 20.0, 40.0],
+                "roe_5y": [5.0, 10.0, 20.0, 40.0],
+                "roce_or_roic": [5.0, 10.0, 20.0, 40.0],
+                "quarterly_profit_growth": [5.0, 10.0, 20.0, 40.0],
+            }
+        )
         result = add_garp_score(df)
         # For row with eps_growth_5y=5 (smallest), rank=0.25 → pct("eps_growth_5y")=0.25
         # peg=1.0 is smallest → inv_peg = 1 - 0.25 = 0.75
@@ -442,6 +473,7 @@ class TestGarpPctRank:
 # ---------------------------------------------------------------------------
 # GARP full weighting best-row
 # ---------------------------------------------------------------------------
+
 
 class TestGarpFullWeighting:
     """Best-case GARP row: inv_peg=1.0 (impossible since rank can't be 0 for
@@ -462,14 +494,18 @@ class TestGarpFullWeighting:
         """Single row: pct() cols all = 1.0, inv_peg = 1 - 1.0 = 0.0.
         garp_score = 0 + 20 + 15 + 15 + 10 + 10 = 70.0
         """
-        df = pd.DataFrame([{
-            "peg": 1.5,
-            "eps_growth_5y": 25.0,
-            "sales_growth_5y": 20.0,
-            "roe_5y": 18.0,
-            "roce_or_roic": 22.0,
-            "quarterly_profit_growth": 15.0,
-        }])
+        df = pd.DataFrame(
+            [
+                {
+                    "peg": 1.5,
+                    "eps_growth_5y": 25.0,
+                    "sales_growth_5y": 20.0,
+                    "roe_5y": 18.0,
+                    "roce_or_roic": 22.0,
+                    "quarterly_profit_growth": 15.0,
+                }
+            ]
+        )
         result = add_garp_score(df)
         assert result["garp_score"].iloc[0] == pytest.approx(70.0, abs=0.01)
 
@@ -482,14 +518,28 @@ class TestGarpFullWeighting:
         best row score = 30*0.5 + 20*1 + 15*1 + 15*1 + 10*1 + 10*1
                        = 15 + 20 + 15 + 15 + 10 + 10 = 85.0
         """
-        df = pd.DataFrame([
-            # best row: smallest peg, highest everything else
-            {"peg": 0.5, "eps_growth_5y": 30.0, "sales_growth_5y": 25.0,
-             "roe_5y": 20.0, "roce_or_roic": 25.0, "quarterly_profit_growth": 20.0},
-            # worse row: largest peg, lowest everything else
-            {"peg": 2.0, "eps_growth_5y": 10.0, "sales_growth_5y": 10.0,
-             "roe_5y": 10.0, "roce_or_roic": 10.0, "quarterly_profit_growth": 10.0},
-        ])
+        df = pd.DataFrame(
+            [
+                # best row: smallest peg, highest everything else
+                {
+                    "peg": 0.5,
+                    "eps_growth_5y": 30.0,
+                    "sales_growth_5y": 25.0,
+                    "roe_5y": 20.0,
+                    "roce_or_roic": 25.0,
+                    "quarterly_profit_growth": 20.0,
+                },
+                # worse row: largest peg, lowest everything else
+                {
+                    "peg": 2.0,
+                    "eps_growth_5y": 10.0,
+                    "sales_growth_5y": 10.0,
+                    "roe_5y": 10.0,
+                    "roce_or_roic": 10.0,
+                    "quarterly_profit_growth": 10.0,
+                },
+            ]
+        )
         result = add_garp_score(df)
         best = result["garp_score"].max()
         assert best == pytest.approx(85.0, abs=0.01)
@@ -504,16 +554,42 @@ class TestGarpFullWeighting:
           garp_score = 30*0.75 + 20*1 + 15*1 + 15*1 + 10*1 + 10*1
                      = 22.5 + 70 = 92.5
         """
-        df = pd.DataFrame([
-            {"peg": 0.5, "eps_growth_5y": 40.0, "sales_growth_5y": 40.0,
-             "roe_5y": 40.0, "roce_or_roic": 40.0, "quarterly_profit_growth": 40.0},
-            {"peg": 1.0, "eps_growth_5y": 30.0, "sales_growth_5y": 30.0,
-             "roe_5y": 30.0, "roce_or_roic": 30.0, "quarterly_profit_growth": 30.0},
-            {"peg": 2.0, "eps_growth_5y": 20.0, "sales_growth_5y": 20.0,
-             "roe_5y": 20.0, "roce_or_roic": 20.0, "quarterly_profit_growth": 20.0},
-            {"peg": 4.0, "eps_growth_5y": 10.0, "sales_growth_5y": 10.0,
-             "roe_5y": 10.0, "roce_or_roic": 10.0, "quarterly_profit_growth": 10.0},
-        ])
+        df = pd.DataFrame(
+            [
+                {
+                    "peg": 0.5,
+                    "eps_growth_5y": 40.0,
+                    "sales_growth_5y": 40.0,
+                    "roe_5y": 40.0,
+                    "roce_or_roic": 40.0,
+                    "quarterly_profit_growth": 40.0,
+                },
+                {
+                    "peg": 1.0,
+                    "eps_growth_5y": 30.0,
+                    "sales_growth_5y": 30.0,
+                    "roe_5y": 30.0,
+                    "roce_or_roic": 30.0,
+                    "quarterly_profit_growth": 30.0,
+                },
+                {
+                    "peg": 2.0,
+                    "eps_growth_5y": 20.0,
+                    "sales_growth_5y": 20.0,
+                    "roe_5y": 20.0,
+                    "roce_or_roic": 20.0,
+                    "quarterly_profit_growth": 20.0,
+                },
+                {
+                    "peg": 4.0,
+                    "eps_growth_5y": 10.0,
+                    "sales_growth_5y": 10.0,
+                    "roe_5y": 10.0,
+                    "roce_or_roic": 10.0,
+                    "quarterly_profit_growth": 10.0,
+                },
+            ]
+        )
         result = add_garp_score(df)
         best = result["garp_score"].max()
         # best row: peg=0.5 → inv_peg=0.75; all other cols highest → rank=1.0
@@ -524,6 +600,7 @@ class TestGarpFullWeighting:
 # ---------------------------------------------------------------------------
 # _passes_garp threshold tests
 # ---------------------------------------------------------------------------
+
 
 class TestPassesGarp:
     """Test _passes_garp boundary conditions against INDIA_THRESHOLDS and US_THRESHOLDS.
@@ -544,14 +621,14 @@ class TestPassesGarp:
     def _passing_india_row(self) -> dict:
         """A row that just passes all INDIA thresholds."""
         return {
-            "market_cap": 1001.0,            # > 1000
-            "sales": 1001.0,                 # > 1000
-            "peg": 1.0,                      # 0 < 1.0 < 2.0
-            "sales_growth_5y": 16.0,         # > 15.0
-            "operating_profit_growth": 11.0, # > 10.0
-            "eps_growth_5y": 13.0,           # > 12.0
-            "roe_5y": 16.0,                  # > 15.0
-            "roce_or_roic": 16.0,            # > 15.0
+            "market_cap": 1001.0,  # > 1000
+            "sales": 1001.0,  # > 1000
+            "peg": 1.0,  # 0 < 1.0 < 2.0
+            "sales_growth_5y": 16.0,  # > 15.0
+            "operating_profit_growth": 11.0,  # > 10.0
+            "eps_growth_5y": 13.0,  # > 12.0
+            "roe_5y": 16.0,  # > 15.0
+            "roce_or_roic": 16.0,  # > 15.0
             "quarterly_profit_growth": 1.0,  # > 0
         }
 
@@ -641,7 +718,7 @@ class TestPassesGarp:
 
     def test_us_thresholds_market_cap_min_is_1B(self):
         row = self._passing_india_row()
-        row["market_cap"] = 999_999_999.0   # just below $1B
+        row["market_cap"] = 999_999_999.0  # just below $1B
         row["sales"] = 1_000_000_001.0
         assert _passes_garp(row, US_THRESHOLDS) is False
 

@@ -143,7 +143,9 @@ def test_obv_matches_pandas_ta_after_offset_removal(series):
 def test_bbands_matches_talib_exact(series):
     talib = require_talib()
     lower, middle, upper = bollinger_bands(series["close"], 20, 2.0)
-    tu, tm, tl = talib.BBANDS(series["close"], timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
+    tu, tm, tl = talib.BBANDS(
+        series["close"], timeperiod=20, nbdevup=2, nbdevdn=2, matype=0
+    )
     mask = np.isfinite(upper) & np.isfinite(tu)
     np.testing.assert_allclose(upper[mask], tu[mask], atol=1e-9, rtol=0)
     np.testing.assert_allclose(lower[mask], tl[mask], atol=1e-9, rtol=0)

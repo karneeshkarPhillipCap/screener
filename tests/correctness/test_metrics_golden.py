@@ -29,6 +29,7 @@ from screener.backtester.metrics import (
 # _sharpe golden
 # ---------------------------------------------------------------------------
 
+
 def test_sharpe_five_bar_golden():
     """_sharpe([0.01, 0.02, -0.01, 0.00, 0.03])
 
@@ -43,8 +44,8 @@ def test_sharpe_five_bar_golden():
     returns = pd.Series([0.01, 0.02, -0.01, 0.0, 0.03])
 
     # Arithmetic re-derivation (no magic numbers — derive from constants).
-    mean = 0.05 / 5              # = 0.01
-    var_pop = 1e-3 / 5           # = 2e-4
+    mean = 0.05 / 5  # = 0.01
+    var_pop = 1e-3 / 5  # = 2e-4
     std_pop = math.sqrt(var_pop)  # = sqrt(2)/100
     expected = mean / std_pop * math.sqrt(252)
 
@@ -55,15 +56,14 @@ def test_sharpe_matches_numpy_formula_directly():
     """_sharpe matches the population-std formula applied via numpy."""
     rng = np.random.default_rng(0)
     returns = pd.Series(rng.normal(0.0005, 0.01, 252))
-    expected = float(
-        returns.mean() / returns.std(ddof=0) * math.sqrt(252)
-    )
+    expected = float(returns.mean() / returns.std(ddof=0) * math.sqrt(252))
     assert abs(_sharpe(returns) - expected) < 1e-12
 
 
 # ---------------------------------------------------------------------------
 # _sortino golden
 # ---------------------------------------------------------------------------
+
 
 def test_sortino_five_bar_golden():
     """_sortino([0.02, -0.01, 0.03, -0.02, 0.01])
@@ -79,8 +79,8 @@ def test_sortino_five_bar_golden():
     """
     returns = pd.Series([0.02, -0.01, 0.03, -0.02, 0.01])
 
-    mean = 3 / 500              # = 0.006
-    std_down = 5e-3             # = 0.005 (derived above)
+    mean = 3 / 500  # = 0.006
+    std_down = 5e-3  # = 0.005 (derived above)
     expected = mean / std_down * math.sqrt(252)
 
     assert abs(_sortino(returns) - expected) < 1e-7
@@ -89,6 +89,7 @@ def test_sortino_five_bar_golden():
 # ---------------------------------------------------------------------------
 # _vol_annual golden
 # ---------------------------------------------------------------------------
+
 
 def test_vol_annual_golden():
     """_vol_annual = std(ddof=0) * sqrt(252).
@@ -109,6 +110,7 @@ def test_vol_annual_golden():
 # ---------------------------------------------------------------------------
 # _cagr golden
 # ---------------------------------------------------------------------------
+
 
 def test_cagr_linear_equity_one_year_golden():
     """_cagr(equity over 253 points) = 1.0.
@@ -143,6 +145,7 @@ def test_cagr_decreasing_equity_is_negative():
 # _max_drawdown golden
 # ---------------------------------------------------------------------------
 
+
 def test_max_drawdown_peak_trough_golden():
     """_max_drawdown([100, 120, 90, 110, 80, 95])
 
@@ -175,7 +178,9 @@ def test_max_drawdown_matches_empyrical_on_random_equity():
 
     rng = np.random.default_rng(3)
     returns = pd.Series(rng.normal(0.0005, 0.01, 252))
-    equity = pd.Series(np.concatenate([[100.0], 100.0 * np.cumprod(1.0 + returns.values)]))
+    equity = pd.Series(
+        np.concatenate([[100.0], 100.0 * np.cumprod(1.0 + returns.values)])
+    )
 
     screener_mdd = _max_drawdown(equity)
     emp_mdd = empyrical.max_drawdown(returns)
@@ -186,6 +191,7 @@ def test_max_drawdown_matches_empyrical_on_random_equity():
 # ---------------------------------------------------------------------------
 # _calmar golden
 # ---------------------------------------------------------------------------
+
 
 def test_calmar_matches_empyrical_oracle():
     """_calmar(equity) agrees with empyrical.calmar_ratio(returns).
@@ -199,7 +205,9 @@ def test_calmar_matches_empyrical_oracle():
 
     rng = np.random.default_rng(7)
     returns = pd.Series(rng.normal(0.001, 0.01, 252))
-    equity = pd.Series(np.concatenate([[100.0], 100.0 * np.cumprod(1.0 + returns.values)]))
+    equity = pd.Series(
+        np.concatenate([[100.0], 100.0 * np.cumprod(1.0 + returns.values)])
+    )
 
     screener = _calmar(equity)
     emp = empyrical.calmar_ratio(returns)
@@ -216,6 +224,7 @@ def test_calmar_returns_zero_when_no_drawdown():
 # ---------------------------------------------------------------------------
 # _daily_returns
 # ---------------------------------------------------------------------------
+
 
 def test_daily_returns_pct_change_golden():
     """_daily_returns([100, 110, 99]) = [0.1, -0.1/1.1]

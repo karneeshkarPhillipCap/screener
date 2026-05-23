@@ -38,8 +38,8 @@ class TestAaplHistoricalSanity:
 
     # Fixed 5-day window well in the past — stable, non-holiday week
     SYMBOL = "AAPL"
-    START = date(2023, 1, 9)   # Mon
-    END = date(2023, 1, 13)    # Fri
+    START = date(2023, 1, 9)  # Mon
+    END = date(2023, 1, 13)  # Fri
 
     @pytest.fixture(scope="class")
     def aapl_frame(self, tmp_path_factory):
@@ -122,7 +122,9 @@ def test_reliance_ns_basic_sanity(tmp_path):
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path, auto_adjust=True)
     results = fetcher.fetch([symbol], date(2023, 1, 9), date(2023, 1, 13))
     if symbol not in results or results[symbol].empty:
-        pytest.skip("RELIANCE.NS data unavailable for test window — may be holiday week")
+        pytest.skip(
+            "RELIANCE.NS data unavailable for test window — may be holiday week"
+        )
     frame = results[symbol]
     assert frame.index.tz is None
     close = frame["close"]
@@ -140,9 +142,7 @@ def test_raw_download_has_split_columns(tmp_path):
     _normalize_frame should then produce 'split_factor' and 'stock_splits'
     columns in the output.
     """
-    fetcher = YFinancePriceFetcher(
-        cache_dir=tmp_path, auto_adjust=False
-    )
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, auto_adjust=False)
     results = fetcher.fetch(["AAPL"], date(2023, 1, 9), date(2023, 1, 13))
     frame = results.get("AAPL", pd.DataFrame())
     if frame.empty:

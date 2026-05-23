@@ -53,13 +53,13 @@ def _make_frame(rows: list[dict]) -> pd.DataFrame:
 def bars_s1_buy_and_hold() -> pd.DataFrame:
     rows = [
         # bar0–bar3: pre-signal; close rises gently
-        {"open": 98.0,  "high": 99.0,  "low": 97.5,  "close": 98.5,  "volume": 10_000},
-        {"open": 98.5,  "high": 99.5,  "low": 98.0,  "close": 99.0,  "volume": 10_000},
-        {"open": 99.0,  "high": 100.0, "low": 98.8,  "close": 99.5,  "volume": 10_000},
+        {"open": 98.0, "high": 99.0, "low": 97.5, "close": 98.5, "volume": 10_000},
+        {"open": 98.5, "high": 99.5, "low": 98.0, "close": 99.0, "volume": 10_000},
+        {"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.5, "volume": 10_000},
         # bar3 = signal bar (as_of date)
-        {"open": 99.5,  "high": 100.5, "low": 99.0,  "close": 100.0, "volume": 10_000},
+        {"open": 99.5, "high": 100.5, "low": 99.0, "close": 100.0, "volume": 10_000},
         # bar4 = entry bar; open=100.0 → entry_fill=100.0
-        {"open": 100.0, "high": 102.0, "low": 99.5,  "close": 101.0, "volume": 10_000},
+        {"open": 100.0, "high": 102.0, "low": 99.5, "close": 101.0, "volume": 10_000},
         # bars 5–9: price drifts up; no stop/target
         {"open": 101.0, "high": 103.0, "low": 100.5, "close": 102.0, "volume": 10_000},
         {"open": 102.0, "high": 105.0, "low": 101.5, "close": 104.0, "volume": 10_000},
@@ -89,15 +89,15 @@ def bars_s1_buy_and_hold() -> pd.DataFrame:
 
 def bars_s2_stop_intrabar() -> pd.DataFrame:
     rows = [
-        {"open": 98.0,  "high": 99.0,  "low": 97.5,  "close": 98.5,  "volume": 10_000},
-        {"open": 98.5,  "high": 99.5,  "low": 98.0,  "close": 99.0,  "volume": 10_000},
-        {"open": 99.0,  "high": 100.0, "low": 98.8,  "close": 99.5,  "volume": 10_000},
-        {"open": 99.5,  "high": 100.5, "low": 99.0,  "close": 100.0, "volume": 10_000},
+        {"open": 98.0, "high": 99.0, "low": 97.5, "close": 98.5, "volume": 10_000},
+        {"open": 98.5, "high": 99.5, "low": 98.0, "close": 99.0, "volume": 10_000},
+        {"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.5, "volume": 10_000},
+        {"open": 99.5, "high": 100.5, "low": 99.0, "close": 100.0, "volume": 10_000},
         # bar4: entry open=100.0; high > low → no exit triggers (loop starts at i=5)
-        {"open": 100.0, "high": 100.5, "low": 99.8,  "close": 100.2, "volume": 10_000},
+        {"open": 100.0, "high": 100.5, "low": 99.8, "close": 100.2, "volume": 10_000},
         # bar5: open=99.0 > stop_ref=95.0, low=89.0 → stop hit, fill at 95.0
-        {"open": 99.0,  "high": 99.5,  "low": 89.0,  "close": 94.0,  "volume": 10_000},
-        {"open": 94.0,  "high": 95.0,  "low": 93.0,  "close": 94.5,  "volume": 10_000},
+        {"open": 99.0, "high": 99.5, "low": 89.0, "close": 94.0, "volume": 10_000},
+        {"open": 94.0, "high": 95.0, "low": 93.0, "close": 94.5, "volume": 10_000},
     ]
     return _make_frame(rows)
 
@@ -120,12 +120,12 @@ def bars_s2_stop_intrabar() -> pd.DataFrame:
 
 def bars_s3_target_intrabar() -> pd.DataFrame:
     rows = [
-        {"open": 98.0,  "high": 99.0,  "low": 97.5,  "close": 98.5,  "volume": 10_000},
-        {"open": 98.5,  "high": 99.5,  "low": 98.0,  "close": 99.0,  "volume": 10_000},
-        {"open": 99.0,  "high": 100.0, "low": 98.8,  "close": 99.5,  "volume": 10_000},
-        {"open": 99.5,  "high": 100.5, "low": 99.0,  "close": 100.0, "volume": 10_000},
+        {"open": 98.0, "high": 99.0, "low": 97.5, "close": 98.5, "volume": 10_000},
+        {"open": 98.5, "high": 99.5, "low": 98.0, "close": 99.0, "volume": 10_000},
+        {"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.5, "volume": 10_000},
+        {"open": 99.5, "high": 100.5, "low": 99.0, "close": 100.0, "volume": 10_000},
         # bar4: entry open=100.0; no exit at entry bar (loop starts at i=5)
-        {"open": 100.0, "high": 100.5, "low": 99.8,  "close": 100.2, "volume": 10_000},
+        {"open": 100.0, "high": 100.5, "low": 99.8, "close": 100.2, "volume": 10_000},
         # bar5: open=102.0 < target=110.0, high=115.0 → target hit, fill at 110.0
         {"open": 102.0, "high": 115.0, "low": 101.5, "close": 112.0, "volume": 10_000},
         {"open": 112.0, "high": 113.0, "low": 111.5, "close": 112.5, "volume": 10_000},
@@ -151,15 +151,15 @@ def bars_s3_target_intrabar() -> pd.DataFrame:
 
 def bars_s4_gap_down() -> pd.DataFrame:
     rows = [
-        {"open": 98.0,  "high": 99.0,  "low": 97.5,  "close": 98.5,  "volume": 10_000},
-        {"open": 98.5,  "high": 99.5,  "low": 98.0,  "close": 99.0,  "volume": 10_000},
-        {"open": 99.0,  "high": 100.0, "low": 98.8,  "close": 99.5,  "volume": 10_000},
-        {"open": 99.5,  "high": 100.5, "low": 99.0,  "close": 100.0, "volume": 10_000},
+        {"open": 98.0, "high": 99.0, "low": 97.5, "close": 98.5, "volume": 10_000},
+        {"open": 98.5, "high": 99.5, "low": 98.0, "close": 99.0, "volume": 10_000},
+        {"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.5, "volume": 10_000},
+        {"open": 99.5, "high": 100.5, "low": 99.0, "close": 100.0, "volume": 10_000},
         # bar4: entry open=100.0
-        {"open": 100.0, "high": 100.5, "low": 99.8,  "close": 100.2, "volume": 10_000},
+        {"open": 100.0, "high": 100.5, "low": 99.8, "close": 100.2, "volume": 10_000},
         # bar5: GAPS DOWN; open=90.0 ≤ stop_ref=95.0
-        {"open": 90.0,  "high": 91.0,  "low": 88.0,  "close": 89.0,  "volume": 10_000},
-        {"open": 89.0,  "high": 90.0,  "low": 88.5,  "close": 89.5,  "volume": 10_000},
+        {"open": 90.0, "high": 91.0, "low": 88.0, "close": 89.0, "volume": 10_000},
+        {"open": 89.0, "high": 90.0, "low": 88.5, "close": 89.5, "volume": 10_000},
     ]
     return _make_frame(rows)
 
@@ -182,12 +182,12 @@ def bars_s4_gap_down() -> pd.DataFrame:
 
 def bars_s5_gap_up() -> pd.DataFrame:
     rows = [
-        {"open": 98.0,  "high": 99.0,  "low": 97.5,  "close": 98.5,  "volume": 10_000},
-        {"open": 98.5,  "high": 99.5,  "low": 98.0,  "close": 99.0,  "volume": 10_000},
-        {"open": 99.0,  "high": 100.0, "low": 98.8,  "close": 99.5,  "volume": 10_000},
-        {"open": 99.5,  "high": 100.5, "low": 99.0,  "close": 100.0, "volume": 10_000},
+        {"open": 98.0, "high": 99.0, "low": 97.5, "close": 98.5, "volume": 10_000},
+        {"open": 98.5, "high": 99.5, "low": 98.0, "close": 99.0, "volume": 10_000},
+        {"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.5, "volume": 10_000},
+        {"open": 99.5, "high": 100.5, "low": 99.0, "close": 100.0, "volume": 10_000},
         # bar4: entry open=100.0
-        {"open": 100.0, "high": 100.5, "low": 99.8,  "close": 100.2, "volume": 10_000},
+        {"open": 100.0, "high": 100.5, "low": 99.8, "close": 100.2, "volume": 10_000},
         # bar5: GAPS UP; open=115.0 ≥ target_ref=110.0
         {"open": 115.0, "high": 116.0, "low": 114.0, "close": 115.5, "volume": 10_000},
         {"open": 115.5, "high": 116.0, "low": 115.0, "close": 115.8, "volume": 10_000},
@@ -224,14 +224,14 @@ def bars_s5_gap_up() -> pd.DataFrame:
 
 def bars_s6_trailing_stop() -> pd.DataFrame:
     rows = [
-        {"open": 98.0,  "high": 99.0,  "low": 97.5,  "close": 98.5,  "volume": 10_000},
-        {"open": 98.5,  "high": 99.5,  "low": 98.0,  "close": 99.0,  "volume": 10_000},
-        {"open": 99.0,  "high": 100.0, "low": 98.8,  "close": 99.5,  "volume": 10_000},
-        {"open": 99.5,  "high": 100.5, "low": 99.0,  "close": 100.0, "volume": 10_000},
+        {"open": 98.0, "high": 99.0, "low": 97.5, "close": 98.5, "volume": 10_000},
+        {"open": 98.5, "high": 99.5, "low": 98.0, "close": 99.0, "volume": 10_000},
+        {"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.5, "volume": 10_000},
+        {"open": 99.5, "high": 100.5, "low": 99.0, "close": 100.0, "volume": 10_000},
         # bar4: entry open=100.0  (loop starts at i=5)
-        {"open": 100.0, "high": 100.5, "low": 99.8,  "close": 100.2, "volume": 10_000},
+        {"open": 100.0, "high": 100.5, "low": 99.8, "close": 100.2, "volume": 10_000},
         # bar5: high=120.0 → peak lifts to 120; low=99.5 > trail_ref=90 → no exit
-        {"open": 100.0, "high": 120.0, "low": 99.5,  "close": 119.0, "volume": 10_000},
+        {"open": 100.0, "high": 120.0, "low": 99.5, "close": 119.0, "volume": 10_000},
         # bar6: trail_ref=108.0; low=105.0 ≤ 108.0 → trail hit; open=119>108 → fill@108
         {"open": 119.0, "high": 119.5, "low": 105.0, "close": 112.0, "volume": 10_000},
         {"open": 112.0, "high": 113.0, "low": 111.5, "close": 112.5, "volume": 10_000},
@@ -273,13 +273,13 @@ def bars_s6_trailing_stop() -> pd.DataFrame:
 
 def bars_s7_partial_then_time() -> pd.DataFrame:
     rows = [
-        {"open": 98.0,  "high": 99.0,  "low": 97.5,  "close": 98.5,  "volume": 10_000},
-        {"open": 98.5,  "high": 99.5,  "low": 98.0,  "close": 99.0,  "volume": 10_000},
-        {"open": 99.0,  "high": 100.0, "low": 98.8,  "close": 99.5,  "volume": 10_000},
+        {"open": 98.0, "high": 99.0, "low": 97.5, "close": 98.5, "volume": 10_000},
+        {"open": 98.5, "high": 99.5, "low": 98.0, "close": 99.0, "volume": 10_000},
+        {"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.5, "volume": 10_000},
         # bar3 = signal/as_of bar; close > open triggers 'close > 0' always
-        {"open": 99.5,  "high": 100.5, "low": 99.0,  "close": 100.0, "volume": 10_000},
+        {"open": 99.5, "high": 100.5, "low": 99.0, "close": 100.0, "volume": 10_000},
         # bar4: entry open=100.0
-        {"open": 100.0, "high": 100.5, "low": 99.8,  "close": 100.2, "volume": 10_000},
+        {"open": 100.0, "high": 100.5, "low": 99.8, "close": 100.2, "volume": 10_000},
         # bar5 (i=5): partial target=110 hit; open=102<110, high=115≥110 → partial fill@110
         {"open": 102.0, "high": 115.0, "low": 101.5, "close": 112.0, "volume": 10_000},
         # bars 6-9: drifts; no further exit triggers except time at i=9
@@ -313,14 +313,14 @@ def bars_s7_partial_then_time() -> pd.DataFrame:
 
 def bars_s8_time_exit() -> pd.DataFrame:
     rows = [
-        {"open": 98.0,  "high": 99.0,  "low": 97.5,  "close": 98.5,  "volume": 10_000},
-        {"open": 98.5,  "high": 99.5,  "low": 98.0,  "close": 99.0,  "volume": 10_000},
-        {"open": 99.0,  "high": 100.0, "low": 98.8,  "close": 99.5,  "volume": 10_000},
-        {"open": 99.5,  "high": 100.5, "low": 99.0,  "close": 100.0, "volume": 10_000},
+        {"open": 98.0, "high": 99.0, "low": 97.5, "close": 98.5, "volume": 10_000},
+        {"open": 98.5, "high": 99.5, "low": 98.0, "close": 99.0, "volume": 10_000},
+        {"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.5, "volume": 10_000},
+        {"open": 99.5, "high": 100.5, "low": 99.0, "close": 100.0, "volume": 10_000},
         # bar4: entry open=100.0
-        {"open": 100.0, "high": 100.5, "low": 99.8,  "close": 100.2, "volume": 10_000},
+        {"open": 100.0, "high": 100.5, "low": 99.8, "close": 100.2, "volume": 10_000},
         # bar5 (i=5): 5 < 7, no exit
-        {"open": 100.2, "high": 101.0, "low": 99.5,  "close": 101.5, "volume": 10_000},
+        {"open": 100.2, "high": 101.0, "low": 99.5, "close": 101.5, "volume": 10_000},
         # bar6 (i=6): 6 < 7, no exit
         {"open": 101.5, "high": 102.0, "low": 100.8, "close": 103.0, "volume": 10_000},
         # bar7 (i=7): 7 >= 7 → time exit at close=105.0
@@ -359,10 +359,10 @@ def bars_s8_time_exit() -> pd.DataFrame:
 
 def bars_s9_commission_slippage() -> pd.DataFrame:
     rows = [
-        {"open": 98.0,  "high": 99.0,  "low": 97.5,  "close": 98.5,  "volume": 10_000},
-        {"open": 98.5,  "high": 99.5,  "low": 98.0,  "close": 99.0,  "volume": 10_000},
-        {"open": 99.0,  "high": 100.0, "low": 98.8,  "close": 99.5,  "volume": 10_000},
-        {"open": 99.5,  "high": 100.5, "low": 99.0,  "close": 100.0, "volume": 10_000},
+        {"open": 98.0, "high": 99.0, "low": 97.5, "close": 98.5, "volume": 10_000},
+        {"open": 98.5, "high": 99.5, "low": 98.0, "close": 99.0, "volume": 10_000},
+        {"open": 99.0, "high": 100.0, "low": 98.8, "close": 99.5, "volume": 10_000},
+        {"open": 99.5, "high": 100.5, "low": 99.0, "close": 100.0, "volume": 10_000},
         # bar4: entry open=100.5 → entry_fill=100.5*1.001=100.6005
         {"open": 100.5, "high": 101.0, "low": 100.0, "close": 100.8, "volume": 10_000},
         # bar5: open=119.4 ≥ target_ref=119.2116 (take_profit=0.185)
@@ -377,9 +377,18 @@ def bars_s9_commission_slippage() -> pd.DataFrame:
 # Single-ticker universe helpers for run_backtest
 # ---------------------------------------------------------------------------
 
+
 def make_spy_bars(n: int) -> pd.DataFrame:
     """Flat SPY bars used as benchmark placeholder."""
     idx = _bdate_range(n)
-    rows = [{"open": 500.0, "high": 501.0, "low": 499.0, "close": 500.0, "volume": 1_000_000}
-            for _ in range(n)]
+    rows = [
+        {
+            "open": 500.0,
+            "high": 501.0,
+            "low": 499.0,
+            "close": 500.0,
+            "volume": 1_000_000,
+        }
+        for _ in range(n)
+    ]
     return pd.DataFrame(rows, index=idx).astype(float)

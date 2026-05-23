@@ -131,7 +131,10 @@ class TestNormalizeFrameColumns:
         df["SomeExtra"] = 99
         out = _normalize_frame(df)
         assert "someextra" not in out.columns
-        assert set(out.columns).issubset(set(OHLCV_COLUMNS) | {"adj_close", "dividend", "split_factor", "stock_splits"})
+        assert set(out.columns).issubset(
+            set(OHLCV_COLUMNS)
+            | {"adj_close", "dividend", "split_factor", "stock_splits"}
+        )
 
     def test_none_returns_empty_frame(self):
         out = _normalize_frame(None)
@@ -195,7 +198,9 @@ class TestNormalizeFrameSplitFactor:
         df = self._make_split_df([0.0, 0.0, 0.0, 0.0, 0.0])
         out = _normalize_frame(df)
         assert "split_factor" in out.columns
-        np.testing.assert_array_equal(out["split_factor"].values, [1.0, 1.0, 1.0, 1.0, 1.0])
+        np.testing.assert_array_equal(
+            out["split_factor"].values, [1.0, 1.0, 1.0, 1.0, 1.0]
+        )
 
     def test_single_split_2_at_index_2(self):
         """2:1 split on bar 2 → bars 0 and 1 get factor 2, bars 2,3,4 get factor 1."""
@@ -396,8 +401,13 @@ class TestNormalizeFrameIndex:
     def test_tz_aware_index_stripped(self):
         tz_idx = pd.DatetimeIndex(["2024-01-02", "2024-01-03"]).tz_localize("UTC")
         df = pd.DataFrame(
-            {"Open": [100, 101], "High": [102, 103], "Low": [99, 100],
-             "Close": [101, 102], "Volume": [1000, 1000]},
+            {
+                "Open": [100, 101],
+                "High": [102, 103],
+                "Low": [99, 100],
+                "Close": [101, 102],
+                "Volume": [1000, 1000],
+            },
             index=tz_idx,
         )
         out = _normalize_frame(df)
@@ -423,8 +433,13 @@ class TestNormalizeFrameIndex:
         """Even non-midnight timestamps are rounded down to 00:00."""
         idx = pd.DatetimeIndex(["2024-01-02T10:30:00", "2024-01-03T15:00:00"])
         df = pd.DataFrame(
-            {"Open": [100, 101], "High": [102, 103], "Low": [99, 100],
-             "Close": [101, 102], "Volume": [1000, 1000]},
+            {
+                "Open": [100, 101],
+                "High": [102, 103],
+                "Low": [99, 100],
+                "Close": [101, 102],
+                "Volume": [1000, 1000],
+            },
             index=idx,
         )
         out = _normalize_frame(df)
@@ -512,8 +527,13 @@ class TestLoadCached:
         ticker = "TEST2"
         dates = pd.DatetimeIndex(["2024-01-02", "2024-01-03"]).tz_localize("UTC")
         df = pd.DataFrame(
-            {"open": [100.0, 101.0], "high": [102.0, 103.0], "low": [99.0, 100.0],
-             "close": [101.0, 102.0], "volume": [1000.0, 1000.0]},
+            {
+                "open": [100.0, 101.0],
+                "high": [102.0, 103.0],
+                "low": [99.0, 100.0],
+                "close": [101.0, 102.0],
+                "volume": [1000.0, 1000.0],
+            },
             index=dates,
         )
         path = tmp_path / f"{ticker}.parquet"
@@ -614,8 +634,15 @@ class TestFetchCashBhavcopy:
         with patch("screener.operator.fetch._read_cash_bhavcopy_raw", self._mock_read):
             result = fetch_cash_bhavcopy(date(2024, 3, 1))
 
-        expected_cols = ["SYMBOL", "PREV_CLOSE", "CLOSE_PRICE", "AVG_PRICE",
-                         "TTL_TRD_QNTY", "DELIV_QTY", "DELIV_PER"]
+        expected_cols = [
+            "SYMBOL",
+            "PREV_CLOSE",
+            "CLOSE_PRICE",
+            "AVG_PRICE",
+            "TTL_TRD_QNTY",
+            "DELIV_QTY",
+            "DELIV_PER",
+        ]
         for col in expected_cols:
             assert col in result.columns
 
@@ -700,10 +727,12 @@ class TestNearMonthOi:
         return df
 
     def test_two_expiries_populated(self):
-        fo = self._make_fo_df([
-            {"SYMBOL": "RELIANCE", "EXPIRY": "2024-03-28", "OI": 50000},
-            {"SYMBOL": "RELIANCE", "EXPIRY": "2024-04-25", "OI": 20000},
-        ])
+        fo = self._make_fo_df(
+            [
+                {"SYMBOL": "RELIANCE", "EXPIRY": "2024-03-28", "OI": 50000},
+                {"SYMBOL": "RELIANCE", "EXPIRY": "2024-04-25", "OI": 20000},
+            ]
+        )
         result = near_month_oi(fo)
         row = result[result["SYMBOL"] == "RELIANCE"].iloc[0]
         assert row["Current_OI"] == 50000
@@ -711,9 +740,11 @@ class TestNearMonthOi:
         assert row["Cumulative_OI"] == 70000
 
     def test_one_expiry_next_oi_is_nan(self):
-        fo = self._make_fo_df([
-            {"SYMBOL": "TCS", "EXPIRY": "2024-03-28", "OI": 40000},
-        ])
+        fo = self._make_fo_df(
+            [
+                {"SYMBOL": "TCS", "EXPIRY": "2024-03-28", "OI": 40000},
+            ]
+        )
         result = near_month_oi(fo)
         row = result[result["SYMBOL"] == "TCS"].iloc[0]
         assert row["Current_OI"] == 40000
@@ -722,11 +753,13 @@ class TestNearMonthOi:
 
     def test_three_expiries_only_first_two_used(self):
         """Third expiry is ignored; only current and next."""
-        fo = self._make_fo_df([
-            {"SYMBOL": "INFY", "EXPIRY": "2024-03-28", "OI": 10000},
-            {"SYMBOL": "INFY", "EXPIRY": "2024-04-25", "OI": 8000},
-            {"SYMBOL": "INFY", "EXPIRY": "2024-05-30", "OI": 5000},
-        ])
+        fo = self._make_fo_df(
+            [
+                {"SYMBOL": "INFY", "EXPIRY": "2024-03-28", "OI": 10000},
+                {"SYMBOL": "INFY", "EXPIRY": "2024-04-25", "OI": 8000},
+                {"SYMBOL": "INFY", "EXPIRY": "2024-05-30", "OI": 5000},
+            ]
+        )
         result = near_month_oi(fo)
         row = result[result["SYMBOL"] == "INFY"].iloc[0]
         assert row["Current_OI"] == 10000
@@ -734,11 +767,13 @@ class TestNearMonthOi:
         assert row["Cumulative_OI"] == 18000
 
     def test_multiple_symbols(self):
-        fo = self._make_fo_df([
-            {"SYMBOL": "A", "EXPIRY": "2024-03-28", "OI": 100},
-            {"SYMBOL": "A", "EXPIRY": "2024-04-25", "OI": 50},
-            {"SYMBOL": "B", "EXPIRY": "2024-03-28", "OI": 200},
-        ])
+        fo = self._make_fo_df(
+            [
+                {"SYMBOL": "A", "EXPIRY": "2024-03-28", "OI": 100},
+                {"SYMBOL": "A", "EXPIRY": "2024-04-25", "OI": 50},
+                {"SYMBOL": "B", "EXPIRY": "2024-03-28", "OI": 200},
+            ]
+        )
         result = near_month_oi(fo)
         assert len(result) == 2
         a = result[result["SYMBOL"] == "A"].iloc[0]
@@ -748,11 +783,13 @@ class TestNearMonthOi:
 
     def test_sorted_by_expiry_not_insertion_order(self):
         """Expiries are sorted ascending, so near-month is always smallest."""
-        fo = self._make_fo_df([
-            {"SYMBOL": "X", "EXPIRY": "2024-04-25", "OI": 999},  # far month first
-            {"SYMBOL": "X", "EXPIRY": "2024-03-28", "OI": 100},  # near month second
-        ])
+        fo = self._make_fo_df(
+            [
+                {"SYMBOL": "X", "EXPIRY": "2024-04-25", "OI": 999},  # far month first
+                {"SYMBOL": "X", "EXPIRY": "2024-03-28", "OI": 100},  # near month second
+            ]
+        )
         result = near_month_oi(fo)
         row = result[result["SYMBOL"] == "X"].iloc[0]
-        assert row["Current_OI"] == 100   # near month
-        assert row["Next_OI"] == 999       # far month
+        assert row["Current_OI"] == 100  # near month
+        assert row["Next_OI"] == 999  # far month

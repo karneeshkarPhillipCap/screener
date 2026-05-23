@@ -30,6 +30,7 @@ from screener.backtester.metrics import (
 # Empty inputs — every public function must return a safe sentinel
 # ---------------------------------------------------------------------------
 
+
 def test_sharpe_empty_returns_zero():
     """Guard: `if daily.empty or daily.std(ddof=0) == 0: return 0.0`"""
     assert _sharpe(pd.Series(dtype=float)) == 0.0
@@ -84,6 +85,7 @@ def test_psr_empty_returns_zero():
 # Single-element inputs
 # ---------------------------------------------------------------------------
 
+
 def test_cagr_single_element_equity_returns_zero():
     """Single-bar equity → len(equity) < 2 guard → 0.0."""
     assert _cagr(pd.Series([100.0])) == 0.0
@@ -117,6 +119,7 @@ def test_alpha_beta_single_aligned_row_returns_zeros():
 # ---------------------------------------------------------------------------
 # All-zero returns
 # ---------------------------------------------------------------------------
+
 
 def test_sharpe_all_zero_returns_zero():
     """std(ddof=0) == 0 for zero returns → guard fires → 0.0."""
@@ -156,6 +159,7 @@ def test_psr_all_zero_long():
 # All-positive returns (no downside)
 # ---------------------------------------------------------------------------
 
+
 def test_sortino_all_positive_returns_zero():
     """No negative excess returns → downside empty → guard fires → 0.0.
 
@@ -182,6 +186,7 @@ def test_sortino_two_equal_negatives_zero_std_returns_zero():
 # ---------------------------------------------------------------------------
 # Constant equity
 # ---------------------------------------------------------------------------
+
 
 def test_max_drawdown_constant_equity_is_zero():
     """Constant equity → peak always equals equity → drawdown is always 0."""
@@ -213,6 +218,7 @@ def test_daily_returns_constant_equity_all_zeros():
 # PSR short-series boundary
 # ---------------------------------------------------------------------------
 
+
 def test_psr_returns_zero_when_len_less_than_30():
     """Strict guard: len(daily) < 30 → return 0.0."""
     rng = np.random.default_rng(0)
@@ -232,6 +238,7 @@ def test_psr_nonzero_when_len_equals_30():
 # ---------------------------------------------------------------------------
 # DSR n_trials <= 1 path
 # ---------------------------------------------------------------------------
+
 
 def test_dsr_n_trials_1_equals_psr_zero_benchmark():
     """n_trials <= 1 → `return _psr(daily, 0.0)` directly."""
@@ -261,6 +268,7 @@ def test_dsr_n_trials_greater_than_1_uses_higher_benchmark():
 # Negative start equity guard (CAGR)
 # ---------------------------------------------------------------------------
 
+
 def test_cagr_nonpositive_start_returns_zero():
     """Guard: `if start <= 0: return 0.0`"""
     equity_zero_start = pd.Series([0.0, 100.0, 110.0])
@@ -270,6 +278,7 @@ def test_cagr_nonpositive_start_returns_zero():
 # ---------------------------------------------------------------------------
 # Alpha/beta degenerate bench
 # ---------------------------------------------------------------------------
+
 
 def test_alpha_beta_constant_benchmark_returns_zeros():
     """x.std() == 0 (constant bench) → return (0.0, 0.0) to avoid polyfit singularity."""

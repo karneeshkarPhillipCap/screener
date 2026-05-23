@@ -54,6 +54,7 @@ from screener.backtester.metrics import (
 # Shared fixture
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def sample_returns() -> pd.Series:
     """252 synthetic daily returns (seed=42, ~5 bps/day, ~1 % daily vol)."""
@@ -83,6 +84,7 @@ def sample_bench(sample_returns: pd.Series) -> pd.Series:
 # ---------------------------------------------------------------------------
 # 1. Sharpe — ddof reconciliation
 # ---------------------------------------------------------------------------
+
 
 def test_sharpe_exceeds_empyrical_by_sqrt_n_over_n_minus_1(sample_returns: pd.Series):
     """Screener Sharpe is larger than empyrical by exactly sqrt(N/(N-1)).
@@ -122,7 +124,10 @@ def test_sharpe_reconciliation_is_exact_across_sizes():
 # 2. Annual volatility — ddof reconciliation
 # ---------------------------------------------------------------------------
 
-def test_vol_annual_less_than_empyrical_by_sqrt_n_minus_1_over_n(sample_returns: pd.Series):
+
+def test_vol_annual_less_than_empyrical_by_sqrt_n_minus_1_over_n(
+    sample_returns: pd.Series,
+):
     """Screener annual vol is smaller than empyrical by sqrt((N-1)/N).
 
     Derivation: std is in the NUMERATOR.
@@ -135,7 +140,9 @@ def test_vol_annual_less_than_empyrical_by_sqrt_n_minus_1_over_n(sample_returns:
     emp = empyrical.annual_volatility(sample_returns)
     expected_ratio = math.sqrt((N - 1) / N)
 
-    assert screener < emp, "screener vol (ddof=0) must be smaller than empyrical (ddof=1)"
+    assert screener < emp, (
+        "screener vol (ddof=0) must be smaller than empyrical (ddof=1)"
+    )
     assert abs(screener / emp - expected_ratio) < 1e-10, (
         f"Ratio {screener / emp} != sqrt((N-1)/N) = {expected_ratio}"
     )
@@ -144,6 +151,7 @@ def test_vol_annual_less_than_empyrical_by_sqrt_n_minus_1_over_n(sample_returns:
 # ---------------------------------------------------------------------------
 # 3. CAGR — off-by-one FIXED: screener now annualizes over N-1 return periods
 # ---------------------------------------------------------------------------
+
 
 def test_cagr_screener_uses_elapsed_periods_formula(sample_equity: pd.Series):
     """Screener _cagr(equity) annualizes over (len(equity)-1)/252 — pin exactly.
@@ -198,6 +206,7 @@ def test_cagr_matches_empyrical_after_off_by_one_fix(
 # 4. Sortino divergence (non-standard design choice)
 # ---------------------------------------------------------------------------
 
+
 def test_sortino_screener_vs_empyrical_differ(sample_returns: pd.Series):
     """Document Sortino divergence: the two functions use different downside denominators.
 
@@ -236,7 +245,10 @@ def test_sortino_screener_vs_empyrical_differ(sample_returns: pd.Series):
 # 5. Alpha / Beta vs scipy + empyrical
 # ---------------------------------------------------------------------------
 
-def test_beta_matches_empyrical_and_scipy(sample_returns: pd.Series, sample_bench: pd.Series):
+
+def test_beta_matches_empyrical_and_scipy(
+    sample_returns: pd.Series, sample_bench: pd.Series
+):
     """Beta (OLS slope) agrees with empyrical.beta and scipy.stats.linregress.
 
     OLS slope is unique regardless of annualization convention, so all three
@@ -295,7 +307,10 @@ def test_alpha_screener_is_arithmetic_annualization(
 # 6. Max drawdown agrees with empyrical exactly
 # ---------------------------------------------------------------------------
 
-def test_max_drawdown_matches_empyrical(sample_equity: pd.Series, sample_returns: pd.Series):
+
+def test_max_drawdown_matches_empyrical(
+    sample_equity: pd.Series, sample_returns: pd.Series
+):
     """_max_drawdown(equity) matches empyrical.max_drawdown(returns) to 1e-12.
 
     empyrical computes drawdown on the cumulative return series, which is

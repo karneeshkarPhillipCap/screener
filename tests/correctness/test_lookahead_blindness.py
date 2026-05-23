@@ -17,7 +17,11 @@ import pandas as pd
 import pytest
 
 from screener.backtester.core import simulate_ticker
-from screener.backtester.engine import run_backtest, run_rolling_backtest, select_candidates
+from screener.backtester.engine import (
+    run_backtest,
+    run_rolling_backtest,
+    select_candidates,
+)
 from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import parse
 
@@ -76,6 +80,7 @@ def _perturb_after(bars: pd.DataFrame, cutoff: pd.Timestamp) -> pd.DataFrame:
 # T1 – select_candidates: selection at as_of=D is independent of bars after D
 # ---------------------------------------------------------------------------
 
+
 class TestT1SelectCandidates:
     """Perturb bars with date > as_of and assert selection set is unchanged."""
 
@@ -102,8 +107,7 @@ class TestT1SelectCandidates:
 
         # Perturbed copies: bars after as_of are garbage.
         perturbed: dict[str, pd.DataFrame] = {
-            t: _perturb_after(df, as_of)
-            for t, df in baseline.items()
+            t: _perturb_after(df, as_of) for t, df in baseline.items()
         }
 
         sel_base, _ = self._run(baseline, as_of)
@@ -127,8 +131,7 @@ class TestT1SelectCandidates:
             for i, t in enumerate(tickers)
         }
         perturbed: dict[str, pd.DataFrame] = {
-            t: _perturb_after(df, as_of)
-            for t, df in baseline.items()
+            t: _perturb_after(df, as_of) for t, df in baseline.items()
         }
 
         sel_base, _ = self._run(baseline, as_of)
@@ -146,7 +149,9 @@ class TestT1SelectCandidates:
                 "absent from perturbed selection"
             )
             row_p = rows_p.iloc[0]
-            assert row_b["as_of_close"] == pytest.approx(row_p["as_of_close"], abs=1e-9), (
+            assert row_b["as_of_close"] == pytest.approx(
+                row_p["as_of_close"], abs=1e-9
+            ), (
                 f"LOOKAHEAD BUG: as_of_close for {tk!r} changed after future perturbation"
             )
             assert row_b["as_of_dollar_vol"] == pytest.approx(
@@ -159,6 +164,7 @@ class TestT1SelectCandidates:
 # ---------------------------------------------------------------------------
 # T2 – simulate_ticker: entry_date / entry_price invariant after entry bar
 # ---------------------------------------------------------------------------
+
 
 class TestT2SimulateTicker:
     """Entry fill depends only on bars up to entry_idx; later bars are irrelevant."""
@@ -173,7 +179,9 @@ class TestT2SimulateTicker:
         cfg = self._make_cfg()
 
         outcome_base = simulate_ticker(bars, signal_idx=signal_idx, cfg=cfg)
-        assert outcome_base.trade is not None, "baseline trade is None; check signal_idx"
+        assert outcome_base.trade is not None, (
+            "baseline trade is None; check signal_idx"
+        )
 
         # Perturb everything strictly after the entry bar.
         entry_ts = pd.Timestamp(outcome_base.trade.entry_date)
@@ -237,6 +245,7 @@ class TestT2SimulateTicker:
 # T3 – run_backtest: pre-cutoff trades are byte-identical in a perturbed run
 # ---------------------------------------------------------------------------
 
+
 class TestT3RunBacktest:
     """Full historical backtest: every trade whose entry precedes the cutoff
     must have the same signal_date, entry_date, entry_price in both runs."""
@@ -283,9 +292,7 @@ class TestT3RunBacktest:
         )
 
         # Cutoff = entry_date of the earliest trade.
-        earliest_entry_ts = min(
-            pd.Timestamp(t.entry_date) for t in result_base.trades
-        )
+        earliest_entry_ts = min(pd.Timestamp(t.entry_date) for t in result_base.trades)
         # Perturb everything strictly after the earliest entry.
         bar_frames_pert: dict[str, pd.DataFrame] = {
             t: _perturb_after(df, earliest_entry_ts)
@@ -345,6 +352,7 @@ class TestT3RunBacktest:
 #       is unchanged when tail (dates > D) is perturbed
 # ---------------------------------------------------------------------------
 
+
 class TestT4RollingEngine:
     """Rolling backtest: signals fired on or before D are invariant under tail perturbation."""
 
@@ -397,8 +405,7 @@ class TestT4RollingEngine:
 
         # Perturb all ticker bars strictly after d_cutoff.
         bar_frames_pert: dict[str, pd.DataFrame] = {
-            t: _perturb_after(df, d_cutoff)
-            for t, df in bar_frames_base.items()
+            t: _perturb_after(df, d_cutoff) for t, df in bar_frames_base.items()
         }
         bench_pert = _perturb_after(bench_base, d_cutoff)
 
@@ -414,7 +421,9 @@ class TestT4RollingEngine:
             sel = result.selection.copy()
             sel["signal_date"] = pd.to_datetime(sel["signal_date"])
             sel = sel[sel["signal_date"] <= d_cutoff]
-            return {(row["ticker"], row["signal_date"].date()) for _, row in sel.iterrows()}
+            return {
+                (row["ticker"], row["signal_date"].date()) for _, row in sel.iterrows()
+            }
 
         set_base = _pre_cutoff_set(result_base)
         set_pert = _pre_cutoff_set(result_pert)

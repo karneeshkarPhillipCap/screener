@@ -523,7 +523,9 @@ def test_multi_ticker_divergence_is_bounded() -> None:
     # --- VBT: 2 tickers, 1 cash-sharing slot ---
     vbt = _require_vectorbt()
     close_df = pd.DataFrame({"A": close_A, "B": close_B}, index=idx)
-    open_df = pd.DataFrame({"A": bars_A["open"].to_numpy(), "B": bars_B["open"].to_numpy()}, index=idx)
+    open_df = pd.DataFrame(
+        {"A": bars_A["open"].to_numpy(), "B": bars_B["open"].to_numpy()}, index=idx
+    )
     vbt_result = run_combo_backtest(
         close_df,
         _FAST,
@@ -545,7 +547,10 @@ def test_multi_ticker_divergence_is_bounded() -> None:
     ev_result = run_backtest(cfg_multi, fetcher)
     ev_trades = ev_result.trades
     ev_compound = _compound_return(
-        [(tr.entry_date, tr.exit_date, tr.entry_price, tr.exit_price) for tr in ev_trades]
+        [
+            (tr.entry_date, tr.exit_date, tr.entry_price, tr.exit_price)
+            for tr in ev_trades
+        ]
     )
 
     # The two engines should disagree by > 5 % (relative) — proving non-trivial

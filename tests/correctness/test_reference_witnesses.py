@@ -42,6 +42,7 @@ TRADING_DAYS_PER_YEAR = 252
 # Shared test data
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def long_returns() -> pd.Series:
     """252 synthetic returns with non-trivial skew/kurtosis (seed=42)."""
@@ -59,6 +60,7 @@ def medium_returns() -> pd.Series:
 # ---------------------------------------------------------------------------
 # Witness helpers
 # ---------------------------------------------------------------------------
+
 
 def _scipy_psr(daily: pd.Series, sr_benchmark_annual: float = 0.0) -> float:
     """Independent PSR witness built from scipy primitives.
@@ -114,13 +116,14 @@ def _scipy_dsr(
 # 1. _phi vs scipy.stats.norm.cdf
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("z", [-3.0, -1.96, -1.0, -0.5, 0.0, 0.5, 1.0, 1.96, 3.0])
 def test_phi_matches_scipy_norm_cdf(z: float):
     """_phi(z) == scipy.stats.norm.cdf(z) to 1e-9 for all standard z values."""
     impl = _phi(z)
     ref = scipy.stats.norm.cdf(z)
     assert abs(impl - ref) < 1e-9, (
-        f"_phi({z}) = {impl} differs from scipy {ref} by {abs(impl-ref):.2e}"
+        f"_phi({z}) = {impl} differs from scipy {ref} by {abs(impl - ref):.2e}"
     )
 
 
@@ -139,13 +142,14 @@ def test_phi_symmetry():
 # 2. _phi_inv vs scipy.stats.norm.ppf
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("p", [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99])
 def test_phi_inv_matches_scipy_norm_ppf(p: float):
     """_phi_inv(p) == scipy.stats.norm.ppf(p) to 1e-9 for standard probabilities."""
     impl = _phi_inv(p)
     ref = scipy.stats.norm.ppf(p)
     assert abs(impl - ref) < 1e-9, (
-        f"_phi_inv({p}) = {impl} differs from scipy {ref} by {abs(impl-ref):.2e}"
+        f"_phi_inv({p}) = {impl} differs from scipy {ref} by {abs(impl - ref):.2e}"
     )
 
 
@@ -169,6 +173,7 @@ def test_phi_inv_extreme_boundaries():
 # ---------------------------------------------------------------------------
 # 3. scipy skew/kurtosis match pandas — precondition for PSR witness validity
 # ---------------------------------------------------------------------------
+
 
 def test_scipy_skew_matches_pandas_skew(long_returns: pd.Series):
     """scipy.stats.skew(x, bias=False) == x.skew() (both are bias-corrected).
@@ -201,13 +206,12 @@ def test_scipy_kurtosis_matches_pandas_kurt(long_returns: pd.Series):
 # 4. PSR witness vs _psr implementation
 # ---------------------------------------------------------------------------
 
+
 def test_psr_matches_scipy_witness_long_series(long_returns: pd.Series):
     """_psr(returns, 0.0) matches the scipy witness to 1e-9."""
     impl = _psr(long_returns, sr_benchmark_annual=0.0)
     witness = _scipy_psr(long_returns, sr_benchmark_annual=0.0)
-    assert abs(impl - witness) < 1e-9, (
-        f"PSR impl {impl} != scipy witness {witness}"
-    )
+    assert abs(impl - witness) < 1e-9, f"PSR impl {impl} != scipy witness {witness}"
 
 
 def test_psr_matches_scipy_witness_medium_series(medium_returns: pd.Series):
@@ -242,8 +246,8 @@ def test_psr_increases_as_benchmark_decreases(long_returns: pd.Series):
     psrs = [_psr(long_returns, b) for b in benchmarks]
     for i in range(len(psrs) - 1):
         assert psrs[i] < psrs[i + 1], (
-            f"PSR not monotone: sr_bench {benchmarks[i]}→{benchmarks[i+1]}: "
-            f"{psrs[i]}→{psrs[i+1]}"
+            f"PSR not monotone: sr_bench {benchmarks[i]}→{benchmarks[i + 1]}: "
+            f"{psrs[i]}→{psrs[i + 1]}"
         )
 
 
@@ -258,6 +262,7 @@ def test_psr_returns_zero_for_short_series():
 # ---------------------------------------------------------------------------
 # 5. DSR witness vs _dsr implementation
 # ---------------------------------------------------------------------------
+
 
 def test_dsr_matches_scipy_witness_n_trials_1(long_returns: pd.Series):
     """DSR with n_trials=1 → _psr(daily, 0.0) → matches PSR witness."""
