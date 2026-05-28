@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from datetime import date
 
 import pandas as pd
@@ -20,6 +22,7 @@ from screener.unusual_volume.delivery import (
     quiet_accumulation_events,
 )
 from screener.unusual_volume.filters import _parse_ban_csv, passes_volume_floor
+from screener.unusual_volume.enrich import deep_enrich_india
 from screener.unusual_volume.output import write_json
 from tests.conftest import make_bars
 
@@ -356,3 +359,37 @@ def test_write_json_sanitizes_nonfinite_metrics(tmp_path):
     assert payload[0]["z_score"] is None
     assert payload[0]["pct_rank_252d"] is None
     assert payload[0]["market_cap"] is None
+
+
+def test_deep_enrich_india_handles_section_based_openscreener(monkeypatch):
+    class FakeStock:
+        def __init__(self, symbol: str, **kwargs) -> None:
+            self.symbol = symbol
+
+        def fetch(self, sections: str):
+            assert sections == "shareholding"
+            return {"shareholding": [{"date": "Mar 2026", "promoters": "51.25"}]}
+
+    monkeypatch.setitem(
+        sys.modules, "openscreener", types.SimpleNamespace(Stock=FakeStock)
+    )
+    ev = Event(
+        symbol="SUYOG",
+        date=date(2026, 5, 28),
+        close=100.0,
+        pct_change=1.0,
+        volume=10_000,
+        avg_volume_20d=5_000,
+        rvol=2.0,
+        rvol_5d=2.0,
+        rvol_50d=2.0,
+        rvol_90d=2.0,
+        z_score=2.0,
+        pct_rank_252d=0.9,
+        direction="BUYING",
+        strength="MODERATE",
+    )
+
+    deep_enrich_india([ev])
+
+    assert ev.notes == "promoter holding 51.2%"

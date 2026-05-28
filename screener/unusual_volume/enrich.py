@@ -94,10 +94,11 @@ def deep_enrich_india(events: list[Event]) -> None:
         return
     for ev in events:
         try:
-            stock = Stock(ev.symbol)
-            stock.fetch()
-            df = stock.shareholding_quarterly
-        except (AttributeError, RuntimeError, ConnectionError, TimeoutError):
+            from screener.insiders import _HttpScraper
+
+            stock = Stock(ev.symbol, scraper=_HttpScraper())
+            df = _fetch_shareholding_quarterly(stock)
+        except Exception:
             continue
         if df is None or (hasattr(df, "empty") and df.empty):
             continue
@@ -111,12 +112,40 @@ def deep_enrich_india(events: list[Event]) -> None:
         ev.notes = (ev.notes + "; " + tag).strip("; ") if ev.notes else tag
 
 
+def _fetch_shareholding_quarterly(stock):
+    """Return quarterly shareholding data across openscreener API versions."""
+    fetch = getattr(stock, "fetch", None)
+    if callable(fetch):
+        try:
+            payload = fetch("shareholding")
+        except TypeError:
+            payload = fetch()
+        if isinstance(payload, dict) and payload.get("shareholding") is not None:
+            return payload["shareholding"]
+
+    shareholding = getattr(stock, "shareholding_quarterly", None)
+    if callable(shareholding):
+        return shareholding()
+    return shareholding
+
+
 def _extract_promoter_pct(df) -> Optional[float]:
     """Best-effort: pull the most recent 'Promoters' row from a shareholding
     DataFrame and return their percent holding."""
     if df is None:
         return None
     try:
+        if isinstance(df, list):
+            if not df:
+                return None
+            latest = df[-1]
+            if not isinstance(latest, dict):
+                return None
+            promoter = latest.get("promoters") or latest.get("Promoters")
+            if promoter is None:
+                return None
+            return float(str(promoter).rstrip("%"))
+
         # screener.in shareholding tables typically have 'Promoters' as a row
         # label and quarterly columns.
         if hasattr(df, "index"):
