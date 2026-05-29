@@ -43,6 +43,7 @@ def price_momentum(
     earnings_date: pd.Timestamp,
     bars: pd.DataFrame,
     threshold: float = 0.5,
+    as_of_date: pd.Timestamp | None = None,
 ) -> SignalResult:
     """Long if 5d & 20d returns are both positive going into earnings.
 
@@ -58,8 +59,9 @@ def price_momentum(
             {"reason": "insufficient_data"},
         )
 
-    e_minus_1 = bars[bars.index <= earnings_date]
-    if len(e_minus_1) < 21:
+    signal_date = pd.Timestamp(as_of_date if as_of_date is not None else earnings_date)
+    signal_bars = bars[bars.index <= signal_date]
+    if len(signal_bars) < 21:
         return SignalResult(
             ticker,
             earnings_date,
@@ -69,14 +71,14 @@ def price_momentum(
             {"reason": "insufficient_data"},
         )
 
-    close = e_minus_1["close"].astype(float)
+    close = signal_bars["close"].astype(float)
     ret_5d = (close.iloc[-1] / close.iloc[-6]) - 1.0 if len(close) >= 6 else 0.0
     ret_20d = (close.iloc[-1] / close.iloc[-21]) - 1.0 if len(close) >= 21 else 0.0
 
     score_short = 1.0 if ret_5d > 0 else 0.0
     score_long = 1.0 if ret_20d > 0 else 0.0
     score = (score_short + score_long) / 2.0
-    passed = score >= threshold
+    passed = bool(score >= threshold)
 
     return SignalResult(
         ticker=ticker,
@@ -84,7 +86,11 @@ def price_momentum(
         strategy="price_momentum",
         score=round(score, 4),
         passed=passed,
-        details={"ret_5d": round(ret_5d, 6), "ret_20d": round(ret_20d, 6)},
+        details={
+            "signal_date": signal_bars.index[-1].date().isoformat(),
+            "ret_5d": round(ret_5d, 6),
+            "ret_20d": round(ret_20d, 6),
+        },
     )
 
 
@@ -94,6 +100,7 @@ def volume_surge(
     bars: pd.DataFrame,
     threshold: float = 0.5,
     surge_factor: float = 1.5,
+    as_of_date: pd.Timestamp | None = None,
 ) -> SignalResult:
     """Long if volume > surge_factor × 20d avg on E-1 or E-2.
 
@@ -110,8 +117,9 @@ def volume_surge(
             {"reason": "insufficient_data"},
         )
 
-    e_minus_1 = bars[bars.index <= earnings_date]
-    if len(e_minus_1) < 21:
+    signal_date = pd.Timestamp(as_of_date if as_of_date is not None else earnings_date)
+    signal_bars = bars[bars.index <= signal_date]
+    if len(signal_bars) < 21:
         return SignalResult(
             ticker,
             earnings_date,
@@ -121,8 +129,8 @@ def volume_surge(
             {"reason": "insufficient_data"},
         )
 
-    vol = e_minus_1["volume"].astype(float)
-    avg_20d = vol.iloc[-21:-1].mean()  # 20 bars before E-1
+    vol = signal_bars["volume"].astype(float)
+    avg_20d = float(vol.iloc[-21:-1].mean())  # 20 bars before E-1
     if avg_20d <= 0:
         return SignalResult(
             ticker,
@@ -135,23 +143,27 @@ def volume_surge(
 
     # Check volume on E-1 and E-2
     recent_vols = vol.iloc[-2:] if len(vol) >= 2 else vol.iloc[-1:]
-    max_recent = recent_vols.max()
+    max_recent = float(recent_vols.max())
     ratio = max_recent / avg_20d
 
     # Score: 1.0 if ratio > surge_factor, scaled otherwise
     if ratio >= surge_factor:
-        score = min(ratio / surge_factor, 1.0)
+        score = float(min(ratio / surge_factor, 1.0))
     else:
-        score = max(0.0, ratio / surge_factor) * 0.5  # partial credit
+        score = float(max(0.0, ratio / surge_factor) * 0.5)  # partial credit
 
-    passed = score >= threshold
+    passed = bool(score >= threshold)
     return SignalResult(
         ticker=ticker,
         earnings_date=earnings_date,
         strategy="volume_surge",
         score=round(score, 4),
         passed=passed,
-        details={"volume_ratio": round(ratio, 4), "avg_20d_volume": round(avg_20d, 2)},
+        details={
+            "signal_date": signal_bars.index[-1].date().isoformat(),
+            "volume_ratio": round(ratio, 4),
+            "avg_20d_volume": round(avg_20d, 2),
+        },
     )
 
 
