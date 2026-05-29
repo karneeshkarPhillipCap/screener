@@ -1,0 +1,1356 @@
+use crate::backtester::metrics::compute_metrics;
+use crate::backtester::models::{
+    BacktestConfig, BacktestResult, BarsByTicker, EntryOrderType, ExitReason, PriceAdjustment,
+    SelectionRow, SimOutcome, Trade,
+};
+use crate::backtester::portfolio::{Portfolio, build_equity_curve};
+use crate::backtester::slippage::{Side, apply_slippage};
+use crate::data::{Bars, PricePanel, business_days, tv_to_yf};
+use crate::pine::{Node, evaluate, parse, required_lookback};
+use chrono::{Duration, NaiveDate};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+
+pub trait PriceFetcher {
+    fn fetch(
+        &self,
+        tickers: &[String],
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> anyhow::Result<PricePanel>;
+}
+
+#[derive(Debug, Clone)]
+struct SlotState {
+    ticker: String,
+    entry_idx: usize,
+    entry_date: NaiveDate,
+    entry_fill: f64,
+    signal_date: NaiveDate,
+    stop_ref: Option<f64>,
+    target_ref: Option<f64>,
+    hold_limit_idx: usize,
+    peak: f64,
+    exit_signal: Option<Vec<f64>>,
+    adv_shares: f64,
+    sigma_daily: f64,
+    partial_targets: Vec<f64>,
+    partial_fractions: Vec<f64>,
+    partial_fired: Vec<bool>,
+}
+
+fn slip(
+    ref_price: f64,
+    side: Side,
+    cfg: &BacktestConfig,
+    adv_shares: f64,
+    sigma_daily: f64,
+) -> f64 {
+    apply_slippage(
+        &cfg.slippage_model,
+        ref_price,
+        side,
+        0.0,
+        adv_shares,
+        sigma_daily,
+    )
+}
+
+fn trailing_liquidity(bars: &Bars, signal_idx: usize, window: usize) -> (f64, f64) {
+    if bars.is_empty() || window == 0 {
+        return (0.0, 0.0);
+    }
+    let start = signal_idx.saturating_sub(window - 1);
+    let rows = &bars.rows[start..=signal_idx.min(bars.len() - 1)];
+    let adv = rows.iter().map(|bar| bar.volume).sum::<f64>() / rows.len() as f64;
+    if rows.len() < 2 {
+        return (finite_or_zero(adv), 0.0);
+    }
+    let mut returns = Vec::new();
+    for pair in rows.windows(2) {
+        if pair[0].close != 0.0 {
+            returns.push(pair[1].close / pair[0].close - 1.0);
+        }
+    }
+    let sigma = if returns.is_empty() {
+        0.0
+    } else {
+        let mean = returns.iter().sum::<f64>() / returns.len() as f64;
+        (returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64).sqrt()
+    };
+    (finite_or_zero(adv), finite_or_zero(sigma))
+}
+
+fn finite_or_zero(value: f64) -> f64 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
+fn resolve_entry_fill(
+    bars: &Bars,
+    signal_idx: usize,
+    cfg: &BacktestConfig,
+) -> (Option<usize>, Option<f64>, Option<String>) {
+    if signal_idx + 1 >= bars.len() {
+        return (None, None, Some("no post-signal entry bar".to_string()));
+    }
+    match cfg.entry_order_type {
+        EntryOrderType::Moo => {
+            let idx = signal_idx + 1;
+            (Some(idx), Some(bars.rows[idx].open), None)
+        }
+        EntryOrderType::Moc => {
+            let idx = signal_idx + 1;
+            (Some(idx), Some(bars.rows[idx].close), None)
+        }
+        EntryOrderType::Limit => {
+            let Some(limit_bps) = cfg.entry_limit_bps else {
+                return (
+                    None,
+                    None,
+                    Some("limit order requires entry_limit_bps".to_string()),
+                );
+            };
+            let signal_close = bars.rows[signal_idx].close;
+            let limit_price = signal_close * (1.0 - limit_bps / 10_000.0);
+            for i in signal_idx + 1..bars.len() {
+                let bar = &bars.rows[i];
+                if bar.low <= limit_price {
+                    return (Some(i), Some(bar.open.min(limit_price)), None);
+                }
+            }
+            (
+                None,
+                None,
+                Some("limit order never filled in available window".to_string()),
+            )
+        }
+    }
+}
+
+fn make_slot_state(
+    ticker: &str,
+    bars: &Bars,
+    signal_idx: usize,
+    cfg: &BacktestConfig,
+    exit_ast: Option<&Node>,
+    _rank: usize,
+) -> anyhow::Result<(Option<SlotState>, Option<String>)> {
+    let (entry_idx, entry_ref, warning) = resolve_entry_fill(bars, signal_idx, cfg);
+    let (Some(entry_idx), Some(entry_ref)) = (entry_idx, entry_ref) else {
+        return Ok((None, warning));
+    };
+    let (adv_shares, sigma_daily) = trailing_liquidity(bars, signal_idx, 20);
+    let entry_fill = slip(entry_ref, Side::Buy, cfg, adv_shares, sigma_daily);
+    let exit_signal = match exit_ast {
+        Some(ast) => {
+            Some(evaluate(ast, bars).map_err(|err| anyhow::anyhow!("exit eval failed: {err}"))?)
+        }
+        None => None,
+    };
+    let stop_ref = cfg.stop_loss.map(|pct| entry_fill * (1.0 - pct));
+    let target_ref = cfg.take_profit.map(|pct| entry_fill * (1.0 + pct));
+    let partial_targets = cfg
+        .partial_exits
+        .iter()
+        .map(|(pct, _)| entry_fill * (1.0 + pct))
+        .collect::<Vec<_>>();
+    let partial_fractions = cfg
+        .partial_exits
+        .iter()
+        .map(|(_, fraction)| *fraction)
+        .collect::<Vec<_>>();
+    Ok((
+        Some(SlotState {
+            ticker: ticker.to_string(),
+            entry_idx,
+            entry_date: bars.rows[entry_idx].date,
+            entry_fill,
+            signal_date: bars.rows[signal_idx].date,
+            stop_ref,
+            target_ref,
+            hold_limit_idx: entry_idx + cfg.hold,
+            peak: entry_fill,
+            exit_signal,
+            adv_shares,
+            sigma_daily,
+            partial_targets,
+            partial_fractions,
+            partial_fired: vec![false; cfg.partial_exits.len()],
+        }),
+        None,
+    ))
+}
+
+fn resolve_stop_fill(bar_open: f64, stop_ref: f64, gap_fills: bool) -> f64 {
+    if gap_fills && bar_open <= stop_ref {
+        bar_open
+    } else {
+        stop_ref
+    }
+}
+
+fn resolve_target_fill(bar_open: f64, target_ref: f64, gap_fills: bool) -> f64 {
+    if gap_fills && bar_open >= target_ref {
+        bar_open
+    } else {
+        target_ref
+    }
+}
+
+fn maybe_credit_dividends(
+    portfolio: &mut Portfolio,
+    state: &SlotState,
+    bars: &Bars,
+    idx: usize,
+    cfg: &BacktestConfig,
+) {
+    if cfg.price_adjustment == PriceAdjustment::Full {
+        return;
+    }
+    let dividend = bars.rows[idx].dividend.unwrap_or(0.0);
+    if dividend.is_finite() && dividend > 0.0 {
+        portfolio.credit_dividends(&state.ticker, dividend);
+    }
+}
+
+fn fire_partial_exits_at_bar(
+    state: &mut SlotState,
+    bars: &Bars,
+    idx: usize,
+    cfg: &BacktestConfig,
+    portfolio: &mut Portfolio,
+) -> anyhow::Result<()> {
+    if state.partial_targets.is_empty() || portfolio.get_position(&state.ticker).is_none() {
+        return Ok(());
+    }
+    let bar = &bars.rows[idx];
+    for tier_idx in 0..state.partial_targets.len() {
+        if state.partial_fired[tier_idx] || bar.high < state.partial_targets[tier_idx] {
+            continue;
+        }
+        let reference =
+            resolve_target_fill(bar.open, state.partial_targets[tier_idx], cfg.gap_fills);
+        let fill = slip(
+            reference,
+            Side::Sell,
+            cfg,
+            state.adv_shares,
+            state.sigma_daily,
+        );
+        portfolio.partial_close(
+            &state.ticker,
+            bar.date,
+            fill,
+            ExitReason::Target,
+            state.partial_fractions[tier_idx],
+            cfg.commission_bps,
+        )?;
+        state.partial_fired[tier_idx] = true;
+        if state.stop_ref.is_none_or(|stop| stop < state.entry_fill) {
+            state.stop_ref = Some(state.entry_fill);
+        }
+    }
+    Ok(())
+}
+
+fn check_exit_at_bar(
+    state: &mut SlotState,
+    bars: &Bars,
+    idx: usize,
+    cfg: &BacktestConfig,
+) -> Option<(f64, ExitReason)> {
+    let bar = &bars.rows[idx];
+    let trail_ref = cfg.trailing_stop.map(|trail| state.peak * (1.0 - trail));
+    let stop_hit = state.stop_ref.is_some_and(|stop| bar.low <= stop);
+    let target_hit = state.target_ref.is_some_and(|target| bar.high >= target);
+    let trail_hit = trail_ref.is_some_and(|trail| bar.low <= trail);
+
+    if stop_hit && target_hit {
+        let fill = slip(
+            resolve_stop_fill(bar.open, state.stop_ref.unwrap(), cfg.gap_fills),
+            Side::Sell,
+            cfg,
+            state.adv_shares,
+            state.sigma_daily,
+        );
+        return Some((fill, ExitReason::Stop));
+    }
+    if stop_hit {
+        let fill = slip(
+            resolve_stop_fill(bar.open, state.stop_ref.unwrap(), cfg.gap_fills),
+            Side::Sell,
+            cfg,
+            state.adv_shares,
+            state.sigma_daily,
+        );
+        return Some((fill, ExitReason::Stop));
+    }
+    if trail_hit {
+        let fill = slip(
+            resolve_stop_fill(bar.open, trail_ref.unwrap(), cfg.gap_fills),
+            Side::Sell,
+            cfg,
+            state.adv_shares,
+            state.sigma_daily,
+        );
+        return Some((fill, ExitReason::Trail));
+    }
+    if target_hit {
+        let fill = slip(
+            resolve_target_fill(bar.open, state.target_ref.unwrap(), cfg.gap_fills),
+            Side::Sell,
+            cfg,
+            state.adv_shares,
+            state.sigma_daily,
+        );
+        return Some((fill, ExitReason::Target));
+    }
+    if bar.high > state.peak {
+        state.peak = bar.high;
+    }
+    if state
+        .exit_signal
+        .as_ref()
+        .and_then(|series| series.get(idx))
+        .is_some_and(|value| *value != 0.0)
+    {
+        return Some((
+            slip(
+                bar.close,
+                Side::Sell,
+                cfg,
+                state.adv_shares,
+                state.sigma_daily,
+            ),
+            ExitReason::ExitExpr,
+        ));
+    }
+    if idx >= state.hold_limit_idx {
+        return Some((
+            slip(
+                bar.close,
+                Side::Sell,
+                cfg,
+                state.adv_shares,
+                state.sigma_daily,
+            ),
+            ExitReason::Time,
+        ));
+    }
+    None
+}
+
+fn make_exit(
+    entry_date: NaiveDate,
+    entry_fill: f64,
+    exit_date: NaiveDate,
+    exit_fill: f64,
+    reason: ExitReason,
+    signal_date: NaiveDate,
+) -> Trade {
+    Trade {
+        ticker: String::new(),
+        rank: 0,
+        signal_date,
+        entry_date,
+        entry_price: entry_fill,
+        exit_date,
+        exit_price: exit_fill,
+        exit_reason: reason,
+        shares: 0.0,
+        entry_cost: 0.0,
+        exit_value: 0.0,
+        pnl: 0.0,
+        return_pct: 0.0,
+        dividend_income: 0.0,
+    }
+}
+
+pub fn simulate_ticker(
+    bars: &Bars,
+    signal_idx: usize,
+    cfg: &BacktestConfig,
+    exit_ast: Option<&Node>,
+) -> anyhow::Result<SimOutcome> {
+    let (state, warning) = make_slot_state("", bars, signal_idx, cfg, exit_ast, 0)?;
+    let Some(mut state) = state else {
+        return Ok(SimOutcome {
+            trade: None,
+            warning,
+        });
+    };
+    for idx in state.entry_idx + 1..bars.len() {
+        if let Some((fill, reason)) = check_exit_at_bar(&mut state, bars, idx, cfg) {
+            return Ok(SimOutcome {
+                trade: Some(make_exit(
+                    state.entry_date,
+                    state.entry_fill,
+                    bars.rows[idx].date,
+                    fill,
+                    reason,
+                    state.signal_date,
+                )),
+                warning: None,
+            });
+        }
+    }
+    let last = bars.rows.last().expect("non-empty bars");
+    let fill = slip(
+        last.close,
+        Side::Sell,
+        cfg,
+        state.adv_shares,
+        state.sigma_daily,
+    );
+    Ok(SimOutcome {
+        trade: Some(make_exit(
+            state.entry_date,
+            state.entry_fill,
+            last.date,
+            fill,
+            ExitReason::Eod,
+            state.signal_date,
+        )),
+        warning: None,
+    })
+}
+
+fn passes_entry_filters(
+    bars: &Bars,
+    as_of: NaiveDate,
+    cfg: &BacktestConfig,
+) -> (bool, Option<String>) {
+    if cfg.min_price.is_none() && cfg.min_avg_dollar_volume.is_none() {
+        return (true, None);
+    }
+    let Some(pos) = bars.position_on_or_before(as_of) else {
+        return (false, Some("no history".to_string()));
+    };
+    let close = bars.rows[pos].close;
+    if let Some(min_price) = cfg.min_price
+        && close < min_price
+    {
+        return (false, Some(format!("price {close:.4} < {min_price}")));
+    }
+    if let Some(min_adv) = cfg.min_avg_dollar_volume {
+        let window = cfg.avg_dollar_volume_window.max(1);
+        let start = (pos + 1).saturating_sub(window);
+        let tail = &bars.rows[start..=pos];
+        if tail.is_empty() {
+            return (false, Some("no volume history".to_string()));
+        }
+        let adv = tail.iter().map(|bar| bar.close * bar.volume).sum::<f64>() / tail.len() as f64;
+        if !adv.is_finite() || adv < min_adv {
+            return (false, Some(format!("adv {adv:.0} < {min_adv}")));
+        }
+    }
+    (true, None)
+}
+
+fn resolve_universe(cfg: &BacktestConfig) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    let mut warnings = Vec::new();
+    let mut tickers = if let Some(tickers) = &cfg.tickers {
+        tickers.clone()
+    } else if let Some(path) = &cfg.universe_file {
+        fs::read_to_string(path)?
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(ToString::to_string)
+            .collect()
+    } else {
+        anyhow::bail!(
+            "No universe provided: pass --tickers or --universe-file. The TradingView current-screener fallback was removed because it injects survivorship bias."
+        );
+    };
+    if cfg.max_universe > 0 && tickers.len() > cfg.max_universe {
+        warnings.push(format!(
+            "capped universe from {} to {} tickers",
+            tickers.len(),
+            cfg.max_universe
+        ));
+        tickers.truncate(cfg.max_universe);
+    }
+    Ok((tickers, warnings))
+}
+
+fn select_candidates(
+    bars_by_ticker: &BarsByTicker,
+    entry_ast: &Node,
+    as_of: NaiveDate,
+    top_n: usize,
+    lookback_required: usize,
+    cfg: &BacktestConfig,
+) -> anyhow::Result<(Vec<SelectionRow>, Vec<String>)> {
+    let mut rows = Vec::new();
+    let mut warnings = Vec::new();
+    let mut filtered_count = 0;
+    let pool_limit = (top_n * cfg.reserve_multiple.max(1)).max(top_n);
+    for (ticker, bars) in bars_by_ticker {
+        if bars.is_empty() {
+            warnings.push(format!("no data: {ticker}"));
+            continue;
+        }
+        let Some(pos) = bars.position_on_or_before(as_of) else {
+            warnings.push(format!("insufficient lookback (0 bars): {ticker}"));
+            continue;
+        };
+        if pos + 1 < lookback_required + 1 {
+            warnings.push(format!(
+                "insufficient lookback ({} bars): {ticker}",
+                pos + 1
+            ));
+            continue;
+        }
+        let (passes, _) = passes_entry_filters(bars, as_of, cfg);
+        if !passes {
+            filtered_count += 1;
+            continue;
+        }
+        let history = bars.slice_through(pos);
+        let signal = match evaluate(entry_ast, &history) {
+            Ok(signal) => signal,
+            Err(err) => {
+                warnings.push(format!("entry eval failed: {ticker}: {err}"));
+                continue;
+            }
+        };
+        if signal
+            .last()
+            .is_none_or(|value| *value == 0.0 || value.is_nan())
+        {
+            continue;
+        }
+        let last = &bars.rows[pos];
+        rows.push(SelectionRow {
+            ticker: ticker.clone(),
+            signal_date: None,
+            as_of_close: last.close,
+            as_of_volume: last.volume,
+            as_of_dollar_vol: last.close * last.volume,
+            rank: 0,
+            role: String::new(),
+        });
+    }
+    if filtered_count > 0 {
+        warnings.push(format!(
+            "filtered {filtered_count} tickers on price/liquidity filters"
+        ));
+    }
+    rows.sort_by(|a, b| {
+        b.as_of_dollar_vol
+            .partial_cmp(&a.as_of_dollar_vol)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    rows.truncate(pool_limit);
+    for (i, row) in rows.iter_mut().enumerate() {
+        row.rank = i + 1;
+        row.role = if i < top_n { "active" } else { "reserve" }.to_string();
+    }
+    Ok((rows, warnings))
+}
+
+fn eligible_reserve_signal_idx(
+    bars: &Bars,
+    exit_day: NaiveDate,
+    cfg: &BacktestConfig,
+    entry_ast: &Node,
+    lookback: usize,
+) -> Option<usize> {
+    let pos = bars.position_on_or_before(exit_day)?;
+    if pos + 1 < lookback + 1 {
+        return None;
+    }
+    if !passes_entry_filters(bars, exit_day, cfg).0 {
+        return None;
+    }
+    let history = bars.slice_through(pos);
+    let signal = evaluate(entry_ast, &history).ok()?;
+    if signal
+        .last()
+        .is_some_and(|value| *value != 0.0 && !value.is_nan())
+    {
+        Some(pos)
+    } else {
+        None
+    }
+}
+
+fn close_slot_at_day(
+    state: &mut SlotState,
+    bars: &Bars,
+    day: NaiveDate,
+    cfg: &BacktestConfig,
+    portfolio: &mut Portfolio,
+) -> anyhow::Result<bool> {
+    let Some(idx) = bars.position(day) else {
+        return Ok(false);
+    };
+    if idx < state.entry_idx + 1 {
+        return Ok(false);
+    }
+    maybe_credit_dividends(portfolio, state, bars, idx, cfg);
+    fire_partial_exits_at_bar(state, bars, idx, cfg, portfolio)?;
+    if portfolio.get_position(&state.ticker).is_none() {
+        return Ok(true);
+    }
+    if let Some((fill, reason)) = check_exit_at_bar(state, bars, idx, cfg) {
+        portfolio.close(&state.ticker, day, fill, reason, cfg.commission_bps)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+struct EventDrivenSimCtx<'a> {
+    actives: &'a [SelectionRow],
+    reserves: &'a [SelectionRow],
+    bars_by_tv: &'a BarsByTicker,
+    as_of: NaiveDate,
+    cfg: &'a BacktestConfig,
+    entry_ast: &'a Node,
+    exit_ast: Option<&'a Node>,
+    lookback: usize,
+}
+
+fn run_event_driven_sim(
+    portfolio: &mut Portfolio,
+    ctx: EventDrivenSimCtx<'_>,
+    warnings: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    let EventDrivenSimCtx {
+        actives,
+        reserves,
+        bars_by_tv,
+        as_of,
+        cfg,
+        entry_ast,
+        exit_ast,
+        lookback,
+    } = ctx;
+    let mut slot_states: BTreeMap<usize, Option<SlotState>> = BTreeMap::new();
+    let mut slot_bars: BTreeMap<usize, Bars> = BTreeMap::new();
+    let mut reentries_left: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut pending_reentry: BTreeMap<usize, String> = BTreeMap::new();
+
+    for (slot_id, row) in actives.iter().enumerate() {
+        let Some(bars) = bars_by_tv.get(&row.ticker) else {
+            warnings.push(format!("no data during sim: {}", row.ticker));
+            slot_states.insert(slot_id, None);
+            continue;
+        };
+        let Some(signal_idx) = bars.position_on_or_before(as_of) else {
+            warnings.push(format!("no history at as_of: {}", row.ticker));
+            slot_states.insert(slot_id, None);
+            continue;
+        };
+        let (state, warn) =
+            make_slot_state(&row.ticker, bars, signal_idx, cfg, exit_ast, row.rank)?;
+        let Some(state) = state else {
+            if let Some(warn) = warn {
+                warnings.push(format!("{}: {warn}", row.ticker));
+            }
+            slot_states.insert(slot_id, None);
+            continue;
+        };
+        portfolio.assign(&row.ticker, row.rank, cfg.as_of);
+        portfolio.open(
+            &row.ticker,
+            state.entry_date,
+            state.entry_fill,
+            cfg.commission_bps,
+            true,
+        )?;
+        slot_bars.insert(slot_id, bars.clone());
+        reentries_left.insert(
+            slot_id,
+            if cfg.allow_reentry {
+                cfg.max_reentries
+            } else {
+                0
+            },
+        );
+        slot_states.insert(slot_id, Some(state));
+    }
+
+    let mut taken: BTreeSet<String> = slot_states
+        .values()
+        .filter_map(|state| state.as_ref().map(|s| s.ticker.clone()))
+        .collect();
+    let mut reserve_queue = reserves.to_vec();
+    let horizon_end = as_of + Duration::days((cfg.hold * 3 + 60).max(90) as i64);
+    let mut master_dates = BTreeSet::new();
+    for bars in bars_by_tv.values() {
+        for bar in &bars.rows {
+            if bar.date > as_of && bar.date <= horizon_end {
+                master_dates.insert(bar.date);
+            }
+        }
+    }
+
+    for day in master_dates {
+        let pending = pending_reentry.clone();
+        for (slot_id, ticker) in pending {
+            let Some(slot_frame) = slot_bars.get(&slot_id) else {
+                pending_reentry.remove(&slot_id);
+                continue;
+            };
+            let Some(signal_idx) =
+                eligible_reserve_signal_idx(slot_frame, day, cfg, entry_ast, lookback)
+            else {
+                continue;
+            };
+            let rank = portfolio
+                .closed_trades()
+                .iter()
+                .find(|trade| trade.ticker == ticker)
+                .map(|trade| trade.rank)
+                .unwrap_or(0);
+            let (state, warn) =
+                make_slot_state(&ticker, slot_frame, signal_idx, cfg, exit_ast, rank)?;
+            let Some(state) = state else {
+                if let Some(warn) = warn {
+                    warnings.push(format!("{ticker} re-entry: {warn}"));
+                }
+                pending_reentry.remove(&slot_id);
+                continue;
+            };
+            portfolio.assign(&ticker, rank, day);
+            portfolio.open(
+                &ticker,
+                state.entry_date,
+                state.entry_fill,
+                cfg.commission_bps,
+                true,
+            )?;
+            slot_states.insert(slot_id, Some(state));
+            pending_reentry.remove(&slot_id);
+        }
+
+        let mut freed = Vec::new();
+        let slot_ids: Vec<usize> = slot_states.keys().copied().collect();
+        for slot_id in slot_ids {
+            let Some(Some(state)) = slot_states.get_mut(&slot_id) else {
+                continue;
+            };
+            let bars = slot_bars.get(&slot_id).expect("slot bars exist");
+            if close_slot_at_day(state, bars, day, cfg, portfolio)? {
+                let ticker = state.ticker.clone();
+                slot_states.insert(slot_id, None);
+                freed.push(slot_id);
+                if cfg.allow_reentry && reentries_left.get(&slot_id).copied().unwrap_or(0) > 0 {
+                    *reentries_left.entry(slot_id).or_default() -= 1;
+                    pending_reentry.insert(slot_id, ticker);
+                }
+            }
+        }
+
+        if !cfg.reinvest || freed.is_empty() {
+            continue;
+        }
+        for slot_id in freed {
+            if pending_reentry.contains_key(&slot_id) {
+                continue;
+            }
+            while let Some(reserve) = reserve_queue.first().cloned() {
+                reserve_queue.remove(0);
+                if taken.contains(&reserve.ticker) {
+                    continue;
+                }
+                let Some(reserve_bars) = bars_by_tv.get(&reserve.ticker) else {
+                    continue;
+                };
+                let Some(signal_idx) =
+                    eligible_reserve_signal_idx(reserve_bars, day, cfg, entry_ast, lookback)
+                else {
+                    continue;
+                };
+                let (state, warn) = make_slot_state(
+                    &reserve.ticker,
+                    reserve_bars,
+                    signal_idx,
+                    cfg,
+                    exit_ast,
+                    reserve.rank,
+                )?;
+                let Some(state) = state else {
+                    if let Some(warn) = warn {
+                        warnings.push(format!("{} reserve: {warn}", reserve.ticker));
+                    }
+                    continue;
+                };
+                portfolio.assign(&reserve.ticker, reserve.rank, day);
+                portfolio.open(
+                    &reserve.ticker,
+                    state.entry_date,
+                    state.entry_fill,
+                    cfg.commission_bps,
+                    true,
+                )?;
+                taken.insert(reserve.ticker.clone());
+                slot_bars.insert(slot_id, reserve_bars.clone());
+                slot_states.insert(slot_id, Some(state));
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn fetch_benchmark(
+    benchmark: &str,
+    start: NaiveDate,
+    end: NaiveDate,
+    fetcher: &dyn PriceFetcher,
+) -> anyhow::Result<Vec<(NaiveDate, f64)>> {
+    let panel = fetcher.fetch(&[benchmark.to_string()], start, end)?;
+    Ok(panel
+        .get(benchmark)
+        .map(|bars| bars.rows.iter().map(|bar| (bar.date, bar.close)).collect())
+        .unwrap_or_default())
+}
+
+pub fn run_backtest(
+    cfg: BacktestConfig,
+    fetcher: &dyn PriceFetcher,
+) -> anyhow::Result<BacktestResult> {
+    let mut warnings = Vec::new();
+    let entry_ast = parse(&cfg.entry_expr)?;
+    let exit_ast = match &cfg.exit_expr {
+        Some(expr) if !expr.trim().is_empty() => Some(parse(expr)?),
+        _ => None,
+    };
+    let mut lookback = required_lookback(&entry_ast);
+    if let Some(exit_ast) = &exit_ast {
+        lookback = lookback.max(required_lookback(exit_ast));
+    }
+
+    let (tv_symbols, universe_warnings) = resolve_universe(&cfg)?;
+    warnings.extend(universe_warnings);
+    let yf_by_tv: BTreeMap<String, String> = tv_symbols
+        .iter()
+        .map(|tv| (tv.clone(), tv_to_yf(tv, &cfg.market)))
+        .collect();
+    let mut yf_symbols: Vec<String> = yf_by_tv.values().cloned().collect();
+    yf_symbols.push(cfg.benchmark.clone());
+    yf_symbols.sort();
+    yf_symbols.dedup();
+
+    let start = cfg.as_of - Duration::days((lookback * 2 + 30).max(365) as i64);
+    let end = cfg.as_of + Duration::days((cfg.hold * 2 + 30) as i64);
+    let price_panel = fetcher.fetch(&yf_symbols, start, end)?;
+    let bars_by_tv: BarsByTicker = tv_symbols
+        .iter()
+        .map(|tv| {
+            let yf = yf_by_tv.get(tv).expect("mapped");
+            (tv.clone(), price_panel.get(yf).cloned().unwrap_or_default())
+        })
+        .collect();
+
+    let (selection, selection_warnings) =
+        select_candidates(&bars_by_tv, &entry_ast, cfg.as_of, cfg.top, lookback, &cfg)?;
+    warnings.extend(selection_warnings);
+
+    if selection.is_empty() {
+        let calendar = business_days(cfg.as_of, cfg.as_of + Duration::days((cfg.hold * 2) as i64));
+        let equity = calendar
+            .into_iter()
+            .map(|day| (day, cfg.initial_capital))
+            .collect::<Vec<_>>();
+        let benchmark = fetch_benchmark(&cfg.benchmark, start, end, fetcher)?;
+        let metrics = compute_metrics(&equity, &benchmark, &[], cfg.top.max(1), 1);
+        return Ok(BacktestResult {
+            config: cfg,
+            trades: Vec::new(),
+            equity_curve: equity,
+            benchmark_curve: benchmark,
+            metrics,
+            warnings,
+            selection,
+        });
+    }
+
+    let actives = selection
+        .iter()
+        .filter(|row| row.role == "active")
+        .cloned()
+        .collect::<Vec<_>>();
+    let reserves = selection
+        .iter()
+        .filter(|row| row.role == "reserve")
+        .cloned()
+        .collect::<Vec<_>>();
+    let slot_count = cfg.top.max(actives.len()).max(1);
+    let mut portfolio = Portfolio::new(cfg.initial_capital, slot_count)?;
+    run_event_driven_sim(
+        &mut portfolio,
+        EventDrivenSimCtx {
+            actives: &actives,
+            reserves: &reserves,
+            bars_by_tv: &bars_by_tv,
+            as_of: cfg.as_of,
+            cfg: &cfg,
+            entry_ast: &entry_ast,
+            exit_ast: exit_ast.as_ref(),
+            lookback,
+        },
+        &mut warnings,
+    )?;
+    let trades = portfolio.closed_trades();
+    let mut date_set = BTreeSet::from([cfg.as_of]);
+    for trade in &trades {
+        if let Some(frame) = bars_by_tv.get(&trade.ticker) {
+            for bar in &frame.between(trade.entry_date, trade.exit_date).rows {
+                date_set.insert(bar.date);
+            }
+        }
+    }
+    if date_set.is_empty() {
+        date_set.extend(business_days(
+            cfg.as_of,
+            cfg.as_of + Duration::days((cfg.hold * 2) as i64),
+        ));
+    }
+    let calendar = date_set.into_iter().collect::<Vec<_>>();
+    let equity = build_equity_curve(&calendar, &trades, &bars_by_tv, cfg.initial_capital);
+    let benchmark = fetch_benchmark(&cfg.benchmark, start, end, fetcher)?;
+    let metrics = compute_metrics(&equity, &benchmark, &trades, slot_count, 1);
+    Ok(BacktestResult {
+        config: cfg,
+        trades,
+        equity_curve: equity,
+        benchmark_curve: benchmark,
+        metrics,
+        warnings,
+        selection,
+    })
+}
+
+fn candidate_rows_for_day(
+    day: NaiveDate,
+    bars_by_tv: &BarsByTicker,
+    entry_ast: &Node,
+    lookback: usize,
+    cfg: &BacktestConfig,
+    exclude: &BTreeSet<String>,
+    warnings: &mut Vec<String>,
+) -> Vec<SelectionRow> {
+    let mut rows = Vec::new();
+    for (ticker, bars) in bars_by_tv {
+        if exclude.contains(ticker) {
+            continue;
+        }
+        let Some(pos) = bars.position_on_or_before(day) else {
+            continue;
+        };
+        if pos + 1 < lookback + 1 || pos + 1 >= bars.len() {
+            continue;
+        }
+        if !passes_entry_filters(bars, day, cfg).0 {
+            continue;
+        }
+        let history = bars.slice_through(pos);
+        let signal = match evaluate(entry_ast, &history) {
+            Ok(signal) => signal,
+            Err(err) => {
+                warnings.push(format!("entry eval failed: {ticker}: {err}"));
+                continue;
+            }
+        };
+        if signal
+            .last()
+            .is_none_or(|value| *value == 0.0 || value.is_nan())
+        {
+            continue;
+        }
+        let bar = &bars.rows[pos];
+        rows.push(SelectionRow {
+            ticker: ticker.clone(),
+            signal_date: Some(day),
+            as_of_close: bar.close,
+            as_of_volume: bar.volume,
+            as_of_dollar_vol: bar.close * bar.volume,
+            rank: 0,
+            role: "active".to_string(),
+        });
+    }
+    rows.sort_by(|a, b| {
+        b.as_of_dollar_vol
+            .partial_cmp(&a.as_of_dollar_vol)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for (i, row) in rows.iter_mut().enumerate() {
+        row.rank = i + 1;
+    }
+    rows
+}
+
+pub fn run_rolling_backtest(
+    cfg: BacktestConfig,
+    fetcher: &dyn PriceFetcher,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> anyhow::Result<BacktestResult> {
+    if end_date < start_date {
+        anyhow::bail!("end_date must be >= start_date");
+    }
+    let mut warnings = Vec::new();
+    let entry_ast = parse(&cfg.entry_expr)?;
+    let exit_ast = match &cfg.exit_expr {
+        Some(expr) if !expr.trim().is_empty() => Some(parse(expr)?),
+        _ => None,
+    };
+    let mut lookback = required_lookback(&entry_ast);
+    if let Some(exit_ast) = &exit_ast {
+        lookback = lookback.max(required_lookback(exit_ast));
+    }
+    let (tv_symbols, universe_warnings) = resolve_universe(&cfg)?;
+    warnings.extend(universe_warnings);
+    let yf_by_tv: BTreeMap<String, String> = tv_symbols
+        .iter()
+        .map(|tv| (tv.clone(), tv_to_yf(tv, &cfg.market)))
+        .collect();
+    let mut yf_symbols: Vec<String> = yf_by_tv.values().cloned().collect();
+    yf_symbols.push(cfg.benchmark.clone());
+    yf_symbols.sort();
+    yf_symbols.dedup();
+    let fetch_start = start_date - Duration::days((lookback * 3 + 30).max(365) as i64);
+    let price_panel = fetcher.fetch(&yf_symbols, fetch_start, end_date)?;
+    let bars_by_tv: BarsByTicker = tv_symbols
+        .iter()
+        .map(|tv| {
+            let yf = yf_by_tv.get(tv).expect("mapped");
+            (tv.clone(), price_panel.get(yf).cloned().unwrap_or_default())
+        })
+        .collect();
+
+    let mut master_dates = BTreeSet::new();
+    for bars in bars_by_tv.values() {
+        for bar in &bars.rows {
+            if bar.date >= start_date && bar.date <= end_date {
+                master_dates.insert(bar.date);
+            }
+        }
+    }
+    if master_dates.is_empty() {
+        let calendar = business_days(start_date, end_date);
+        let equity = calendar
+            .iter()
+            .map(|day| (*day, cfg.initial_capital))
+            .collect::<Vec<_>>();
+        let benchmark = fetch_benchmark(&cfg.benchmark, fetch_start, end_date, fetcher)?;
+        let mut metrics = compute_metrics(&equity, &benchmark, &[], cfg.top.max(1), 1);
+        metrics.insert("unique_tickers".to_string(), 0.0);
+        warnings.push("no trading days with price data in rolling window".to_string());
+        return Ok(BacktestResult {
+            config: cfg,
+            trades: Vec::new(),
+            equity_curve: equity,
+            benchmark_curve: benchmark,
+            metrics,
+            warnings,
+            selection: Vec::new(),
+        });
+    }
+
+    let mut portfolio = Portfolio::new(cfg.initial_capital, cfg.top.max(1))?;
+    let mut slot_states: BTreeMap<usize, Option<SlotState>> =
+        (0..cfg.top.max(1)).map(|slot| (slot, None)).collect();
+    let mut slot_bars: BTreeMap<usize, Bars> = BTreeMap::new();
+    let mut selection_rows = Vec::new();
+
+    for day in master_dates.iter().copied() {
+        let mut free_slots = Vec::new();
+        for slot_id in 0..cfg.top.max(1) {
+            match slot_states.get_mut(&slot_id) {
+                Some(Some(state)) => {
+                    let bars = slot_bars.get(&slot_id).expect("slot bars exist");
+                    if close_slot_at_day(state, bars, day, &cfg, &mut portfolio)? {
+                        slot_states.insert(slot_id, None);
+                        free_slots.push(slot_id);
+                    }
+                }
+                _ => free_slots.push(slot_id),
+            }
+        }
+        if free_slots.is_empty() {
+            continue;
+        }
+        let exclude = slot_states
+            .values()
+            .filter_map(|state| state.as_ref().map(|s| s.ticker.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut candidates = candidate_rows_for_day(
+            day,
+            &bars_by_tv,
+            &entry_ast,
+            lookback,
+            &cfg,
+            &exclude,
+            &mut warnings,
+        );
+        if candidates.is_empty() {
+            continue;
+        }
+        for slot_id in free_slots {
+            while let Some(row) = candidates.first().cloned() {
+                candidates.remove(0);
+                if slot_states
+                    .values()
+                    .any(|state| state.as_ref().is_some_and(|s| s.ticker == row.ticker))
+                {
+                    continue;
+                }
+                let Some(bars) = bars_by_tv.get(&row.ticker) else {
+                    continue;
+                };
+                let signal_idx = bars.position_on_or_before(day).expect("candidate has bar");
+                let (state, warn) = make_slot_state(
+                    &row.ticker,
+                    bars,
+                    signal_idx,
+                    &cfg,
+                    exit_ast.as_ref(),
+                    row.rank,
+                )?;
+                let Some(state) = state else {
+                    if let Some(warn) = warn {
+                        warnings.push(format!("{}: {warn}", row.ticker));
+                    }
+                    continue;
+                };
+                if state.entry_date > end_date {
+                    continue;
+                }
+                portfolio.assign(&row.ticker, row.rank, day);
+                portfolio.open(
+                    &row.ticker,
+                    state.entry_date,
+                    state.entry_fill,
+                    cfg.commission_bps,
+                    true,
+                )?;
+                slot_bars.insert(slot_id, bars.clone());
+                slot_states.insert(slot_id, Some(state));
+                selection_rows.push(row);
+                break;
+            }
+        }
+    }
+
+    for (slot_id, state) in slot_states.iter_mut() {
+        let Some(state) = state else {
+            continue;
+        };
+        let Some(bars) = slot_bars.get(slot_id) else {
+            continue;
+        };
+        let tail = bars.between(state.entry_date, end_date);
+        let Some(last) = tail.rows.last() else {
+            continue;
+        };
+        let fill = slip(
+            last.close,
+            Side::Sell,
+            &cfg,
+            state.adv_shares,
+            state.sigma_daily,
+        );
+        portfolio.close(
+            &state.ticker,
+            last.date,
+            fill,
+            ExitReason::Eod,
+            cfg.commission_bps,
+        )?;
+    }
+    let trades = portfolio.closed_trades();
+    let mut date_set = master_dates;
+    for trade in &trades {
+        if let Some(frame) = bars_by_tv.get(&trade.ticker) {
+            for bar in &frame.between(trade.entry_date, trade.exit_date).rows {
+                date_set.insert(bar.date);
+            }
+        }
+    }
+    let calendar = date_set.into_iter().collect::<Vec<_>>();
+    let equity = build_equity_curve(&calendar, &trades, &bars_by_tv, cfg.initial_capital);
+    let benchmark = fetch_benchmark(&cfg.benchmark, fetch_start, end_date, fetcher)?;
+    let mut metrics = compute_metrics(&equity, &benchmark, &trades, cfg.top.max(1), 1);
+    metrics.insert(
+        "unique_tickers".to_string(),
+        trades
+            .iter()
+            .map(|trade| trade.ticker.clone())
+            .collect::<BTreeSet<_>>()
+            .len() as f64,
+    );
+    Ok(BacktestResult {
+        config: cfg,
+        trades,
+        equity_curve: equity,
+        benchmark_curve: benchmark,
+        metrics,
+        warnings,
+        selection: selection_rows,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backtester::models::BacktestConfig;
+    use crate::backtester::slippage::SlippageModel;
+    use crate::data::{Bar, Bars};
+    use approx::assert_relative_eq;
+
+    struct StubPriceFetcher {
+        panel: PricePanel,
+    }
+
+    impl PriceFetcher for StubPriceFetcher {
+        fn fetch(
+            &self,
+            tickers: &[String],
+            _start: NaiveDate,
+            _end: NaiveDate,
+        ) -> anyhow::Result<PricePanel> {
+            Ok(tickers
+                .iter()
+                .map(|ticker| {
+                    (
+                        ticker.clone(),
+                        self.panel.get(ticker).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect())
+        }
+    }
+
+    fn d(day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2024, 1, day).unwrap()
+    }
+
+    fn make_bars(n: usize) -> Bars {
+        Bars::new(
+            (0..n)
+                .map(|i| {
+                    let px = 100.0 + i as f64;
+                    Bar {
+                        date: d(1 + i as u32),
+                        open: px,
+                        high: px + 1.0,
+                        low: px - 1.0,
+                        close: px + 0.2,
+                        volume: 100_000.0,
+                        adj_close: None,
+                        dividend: None,
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    fn cfg() -> BacktestConfig {
+        BacktestConfig {
+            market: "us".to_string(),
+            as_of: d(4),
+            hold: 5,
+            top: 1,
+            entry_expr: "close > sma(close, 3)".to_string(),
+            exit_expr: None,
+            stop_loss: None,
+            take_profit: None,
+            trailing_stop: None,
+            slippage_bps: 0.0,
+            commission_bps: 0.0,
+            initial_capital: 100_000.0,
+            benchmark: "SPY".to_string(),
+            strategy_name: None,
+            tickers: Some(vec!["AAA".to_string()]),
+            universe_file: None,
+            max_universe: 200,
+            min_price: None,
+            min_avg_dollar_volume: None,
+            avg_dollar_volume_window: 20,
+            reserve_multiple: 3,
+            reinvest: true,
+            slippage_model: SlippageModel::Fixed { bps: 0.0 },
+            gap_fills: true,
+            entry_order_type: EntryOrderType::Moo,
+            entry_limit_bps: None,
+            allow_reentry: false,
+            max_reentries: 0,
+            partial_exits: Vec::new(),
+            price_adjustment: PriceAdjustment::Full,
+        }
+    }
+
+    #[test]
+    fn entry_fills_next_day_open() {
+        let bars = make_bars(10);
+        let outcome = simulate_ticker(&bars, 3, &cfg(), None).unwrap();
+        let trade = outcome.trade.unwrap();
+        assert_eq!(trade.entry_date, bars.rows[4].date);
+        assert_relative_eq!(trade.entry_price, bars.rows[4].open);
+    }
+
+    #[test]
+    fn no_post_signal_bar_warns() {
+        let bars = make_bars(5);
+        let outcome = simulate_ticker(&bars, 4, &cfg(), None).unwrap();
+        assert!(outcome.trade.is_none());
+        assert!(outcome.warning.unwrap().contains("no post-signal"));
+    }
+
+    #[test]
+    fn stop_loss_triggers_from_low() {
+        let mut bars = make_bars(10);
+        bars.rows[4].open = 100.0;
+        bars.rows[4].high = 100.5;
+        bars.rows[4].low = 100.0;
+        bars.rows[5].open = 100.2;
+        bars.rows[5].low = 89.0;
+        let mut cfg = cfg();
+        cfg.hold = 10;
+        cfg.stop_loss = Some(0.05);
+        let trade = simulate_ticker(&bars, 3, &cfg, None)
+            .unwrap()
+            .trade
+            .unwrap();
+        assert_eq!(trade.exit_reason, ExitReason::Stop);
+        assert_relative_eq!(trade.exit_price, 95.0);
+        assert_eq!(trade.exit_date, bars.rows[5].date);
+    }
+
+    #[test]
+    fn same_bar_stop_and_target_stop_wins() {
+        let mut bars = make_bars(10);
+        bars.rows[4].open = 100.0;
+        bars.rows[4].high = 100.0;
+        bars.rows[4].low = 100.0;
+        bars.rows[5].open = 100.0;
+        bars.rows[5].high = 130.0;
+        bars.rows[5].low = 85.0;
+        let mut cfg = cfg();
+        cfg.hold = 10;
+        cfg.stop_loss = Some(0.05);
+        cfg.take_profit = Some(0.10);
+        let trade = simulate_ticker(&bars, 3, &cfg, None)
+            .unwrap()
+            .trade
+            .unwrap();
+        assert_eq!(trade.exit_reason, ExitReason::Stop);
+    }
+
+    #[test]
+    fn historical_backtest_selects_and_trades() {
+        let aaa = make_bars(12);
+        let spy = make_bars(12);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([("AAA".to_string(), aaa.clone()), ("SPY".to_string(), spy)]),
+        };
+        let result = run_backtest(cfg(), &fetcher).unwrap();
+        assert_eq!(result.selection[0].ticker, "AAA");
+        assert_eq!(result.trades[0].ticker, "AAA");
+    }
+}
