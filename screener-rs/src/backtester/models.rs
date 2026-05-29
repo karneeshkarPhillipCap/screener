@@ -100,6 +100,8 @@ pub struct BacktestConfig {
     pub allow_reentry: bool,
     #[serde(default)]
     pub max_reentries: usize,
+    #[serde(default = "default_max_concurrent_per_ticker")]
+    pub max_concurrent_per_ticker: usize,
     #[serde(default)]
     pub partial_exits: Vec<(f64, f64)>,
     #[serde(default)]
@@ -123,6 +125,9 @@ fn default_reserve_multiple() -> usize {
 }
 fn default_true() -> bool {
     true
+}
+fn default_max_concurrent_per_ticker() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

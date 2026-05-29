@@ -547,6 +547,7 @@ mod tests {
                 volume: 100.0,
                 adj_close: None,
                 dividend: None,
+                extra: std::collections::BTreeMap::new(),
             });
         }
         Bars::new(rows)

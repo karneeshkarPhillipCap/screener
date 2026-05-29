@@ -294,6 +294,8 @@ struct CommonBacktestArgs {
     allow_reentry: bool,
     #[arg(long, default_value_t = 0)]
     max_reentries: usize,
+    #[arg(long, default_value_t = 1)]
+    max_concurrent_per_ticker: usize,
     #[arg(long = "partial-exit")]
     partial_exit_args: Vec<String>,
     #[arg(long, default_value = "full")]
@@ -1091,6 +1093,7 @@ fn build_backtest_config(
         entry_limit_bps: args.entry_limit_bps,
         allow_reentry: args.allow_reentry,
         max_reentries: args.max_reentries,
+        max_concurrent_per_ticker: args.max_concurrent_per_ticker,
         partial_exits: parse_partial_exits(&args.partial_exit_args)?,
         price_adjustment: parse_price_adjustment(&args.price_adjustment)?,
     })

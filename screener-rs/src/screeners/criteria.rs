@@ -1,6 +1,20 @@
 use crate::screeners::models::ScreenRow;
 use std::collections::BTreeSet;
 
+pub mod breakout;
+pub mod cheap_quality;
+pub mod dividend;
+pub mod ema_breakout;
+pub mod intraday_breakout;
+pub mod intraday_momentum;
+pub mod momentum_value;
+pub mod near_52_week_high;
+pub mod obv_trend;
+pub mod quality;
+pub mod undervalued;
+pub mod value;
+pub mod vol_breakout;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operand {
     Field(&'static str),
@@ -105,32 +119,41 @@ fn value(op: &Operand, row: &ScreenRow) -> Option<f64> {
     }
 }
 
-fn cmp(left: Operand, op: CmpOp, right: Operand) -> Predicate {
+pub(super) fn cmp(left: Operand, op: CmpOp, right: Operand) -> Predicate {
     Predicate::Compare { left, op, right }
 }
 
-fn field(name: &'static str) -> Operand {
+pub(super) fn field(name: &'static str) -> Operand {
     Operand::Field(name)
 }
 
-fn val(value: f64) -> Operand {
+pub(super) fn val(value: f64) -> Operand {
     Operand::Value(value)
+}
+
+pub(super) fn ema_predicates() -> Vec<Predicate> {
+    vec![
+        cmp(field("EMA5"), CmpOp::Gt, field("EMA20")),
+        cmp(field("EMA20"), CmpOp::Gt, field("EMA100")),
+        cmp(field("EMA100"), CmpOp::Gt, field("EMA200")),
+        cmp(field("EMA200"), CmpOp::Gt, val(0.0)),
+    ]
 }
 
 pub fn criteria_names() -> BTreeSet<&'static str> {
     [
         "ema",
-        "breakout",
-        "ema_breakout",
-        "value",
-        "quality",
-        "cheap_quality",
-        "undervalued",
-        "dividend",
-        "momentum_value",
-        "intraday_momentum",
-        "intraday_breakout",
-        "near_52_high",
+        breakout::NAME,
+        ema_breakout::NAME,
+        value::NAME,
+        quality::NAME,
+        cheap_quality::NAME,
+        undervalued::NAME,
+        dividend::NAME,
+        momentum_value::NAME,
+        intraday_momentum::NAME,
+        intraday_breakout::NAME,
+        near_52_week_high::NAME,
     ]
     .into_iter()
     .collect()
@@ -142,8 +165,8 @@ pub fn pipeline_names() -> BTreeSet<&'static str> {
         "promoter-buys",
         "rs-breakout",
         "unusual-volume",
-        "obv-trend",
-        "vol-breakout",
+        obv_trend::NAME,
+        vol_breakout::NAME,
     ]
     .into_iter()
     .collect()
@@ -151,87 +174,18 @@ pub fn pipeline_names() -> BTreeSet<&'static str> {
 
 pub fn predicates_for(name: &str) -> anyhow::Result<Vec<Predicate>> {
     let mut preds = match name {
-        "ema" => vec![
-            cmp(field("EMA5"), CmpOp::Gt, field("EMA20")),
-            cmp(field("EMA20"), CmpOp::Gt, field("EMA100")),
-            cmp(field("EMA100"), CmpOp::Gt, field("EMA200")),
-            cmp(field("EMA200"), CmpOp::Gt, val(0.0)),
-        ],
-        "breakout" => vec![
-            Predicate::AbovePct {
-                field: "close",
-                other: "price_52_week_high",
-                pct: 0.9,
-            },
-            cmp(field("volume"), CmpOp::Gt, field("average_volume_10d_calc")),
-        ],
-        "value" => vec![
-            cmp(field("price_earnings_ttm"), CmpOp::Gt, val(0.0)),
-            cmp(field("price_earnings_ttm"), CmpOp::Lte, val(20.0)),
-        ],
-        "quality" => vec![
-            cmp(field("return_on_equity"), CmpOp::Gt, val(15.0)),
-            cmp(field("debt_to_equity"), CmpOp::Lt, val(1.0)),
-        ],
-        "cheap_quality" => vec![
-            cmp(field("price_earnings_ttm"), CmpOp::Gt, val(0.0)),
-            cmp(field("price_earnings_ttm"), CmpOp::Lte, val(20.0)),
-            cmp(field("return_on_equity"), CmpOp::Gt, val(15.0)),
-            cmp(field("debt_to_equity"), CmpOp::Lt, val(1.0)),
-            cmp(field("EMA20"), CmpOp::Gt, field("EMA200")),
-        ],
-        "undervalued" => vec![
-            cmp(field("price_earnings_ttm"), CmpOp::Gt, val(0.0)),
-            cmp(field("price_earnings_ttm"), CmpOp::Lte, val(12.0)),
-            cmp(field("volume"), CmpOp::Gt, field("average_volume_10d_calc")),
-        ],
-        "dividend" => vec![
-            cmp(field("dividend_yield_recent"), CmpOp::Gt, val(3.0)),
-            cmp(field("price_earnings_ttm"), CmpOp::Gt, val(0.0)),
-            cmp(field("price_earnings_ttm"), CmpOp::Lte, val(25.0)),
-            cmp(field("debt_to_equity"), CmpOp::Lt, val(1.5)),
-        ],
-        "momentum_value" => vec![
-            cmp(field("price_earnings_ttm"), CmpOp::Gt, val(0.0)),
-            cmp(field("price_earnings_ttm"), CmpOp::Lte, val(25.0)),
-            cmp(field("RSI"), CmpOp::Gte, val(50.0)),
-            cmp(field("RSI"), CmpOp::Lte, val(70.0)),
-            cmp(field("EMA5"), CmpOp::Gt, field("EMA20")),
-            cmp(field("EMA20"), CmpOp::Gt, field("EMA200")),
-        ],
-        "intraday_momentum" => vec![
-            cmp(field("relative_volume_10d_calc"), CmpOp::Gte, val(1.5)),
-            cmp(field("volume"), CmpOp::Gte, val(200_000.0)),
-            cmp(field("close"), CmpOp::Gte, field("EMA20")),
-            cmp(field("EMA20"), CmpOp::Gt, field("EMA200")),
-            cmp(field("RSI"), CmpOp::Gte, val(55.0)),
-            cmp(field("RSI"), CmpOp::Lte, val(80.0)),
-            cmp(field("change"), CmpOp::Gte, val(1.0)),
-        ],
-        "intraday_breakout" => vec![
-            Predicate::AbovePct {
-                field: "close",
-                other: "price_52_week_high",
-                pct: 0.97,
-            },
-            cmp(field("relative_volume_10d_calc"), CmpOp::Gte, val(2.0)),
-            cmp(field("change"), CmpOp::Gte, val(1.5)),
-            cmp(field("EMA5"), CmpOp::Gt, field("EMA20")),
-        ],
-        "near_52_high" => vec![
-            Predicate::BetweenPct {
-                field: "close",
-                other: "price_52_week_high",
-                low: 0.8,
-                high: 1.0,
-            },
-            cmp(field("close"), CmpOp::Lt, field("price_52_week_high")),
-        ],
-        "ema_breakout" => {
-            let mut ema = predicates_for("ema")?;
-            ema.extend(predicates_for("breakout")?);
-            return Ok(ema);
-        }
+        "ema" => ema_predicates(),
+        breakout::NAME => breakout::predicates(),
+        value::NAME => value::predicates(),
+        quality::NAME => quality::predicates(),
+        cheap_quality::NAME => cheap_quality::predicates(),
+        undervalued::NAME => undervalued::predicates(),
+        dividend::NAME => dividend::predicates(),
+        momentum_value::NAME => momentum_value::predicates(),
+        intraday_momentum::NAME => intraday_momentum::predicates(),
+        intraday_breakout::NAME => intraday_breakout::predicates(),
+        near_52_week_high::NAME => near_52_week_high::predicates(),
+        ema_breakout::NAME => ema_breakout::predicates(),
         _ => anyhow::bail!("unknown non-pipeline criterion {name:?}"),
     };
     preds.shrink_to_fit();

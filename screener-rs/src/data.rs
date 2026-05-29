@@ -15,6 +15,8 @@ pub struct Bar {
     pub adj_close: Option<f64>,
     #[serde(default)]
     pub dividend: Option<f64>,
+    #[serde(default)]
+    pub extra: BTreeMap<String, f64>,
 }
 
 impl Bar {
@@ -27,7 +29,7 @@ impl Bar {
             "volume" => Some(self.volume),
             "adj_close" => Some(self.adj_close.unwrap_or(self.close)),
             "dividend" => Some(self.dividend.unwrap_or(0.0)),
-            _ => None,
+            _ => self.extra.get(name).copied(),
         }
     }
 }
@@ -155,6 +157,7 @@ pub fn read_price_csv(path: impl AsRef<Path>) -> anyhow::Result<PricePanel> {
             volume: row.volume,
             adj_close: row.adj_close,
             dividend: row.dividend,
+            extra: BTreeMap::new(),
         });
     }
     Ok(grouped

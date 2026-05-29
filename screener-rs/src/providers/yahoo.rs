@@ -2,6 +2,7 @@ use crate::backtester::PriceFetcher;
 use crate::data::{Bar, Bars, PricePanel};
 use anyhow::Context;
 use chrono::{Duration, NaiveDate};
+use rayon::prelude::*;
 use reqwest::blocking::Client;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -52,18 +53,15 @@ impl PriceFetcher for YahooPriceFetcher {
         start: NaiveDate,
         end: NaiveDate,
     ) -> anyhow::Result<PricePanel> {
-        let mut out = PricePanel::new();
-        for ticker in tickers {
-            match self.fetch_symbol(ticker, start, end) {
-                Ok(bars) => {
-                    out.insert(ticker.clone(), bars);
-                }
-                Err(_) => {
-                    out.insert(ticker.clone(), Bars::default());
-                }
-            }
-        }
-        Ok(out)
+        Ok(tickers
+            .par_iter()
+            .map(|ticker| {
+                let bars = self
+                    .fetch_symbol(ticker, start, end)
+                    .unwrap_or_else(|_| Bars::default());
+                (ticker.clone(), bars)
+            })
+            .collect())
     }
 }
 
@@ -122,6 +120,7 @@ fn parse_chart_payload(payload: &Value) -> anyhow::Result<Bars> {
             volume,
             adj_close: adj_close.and_then(|arr| array_f64(arr, i)),
             dividend: dividends.get(&date).copied(),
+            extra: BTreeMap::new(),
         });
     }
     Ok(Bars::new(rows))

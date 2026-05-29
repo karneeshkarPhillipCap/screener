@@ -20,3 +20,8 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 approx = "0.5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
