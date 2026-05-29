@@ -649,9 +649,9 @@ fn run_rs_breakout(args: RsBreakoutArgs) -> anyhow::Result<()> {
 
 fn run_unusual_volume(args: UnusualVolumeArgs) -> anyhow::Result<()> {
     let _provider_options = (args.refresh, args.buildup_window, args.buildup_min_score);
-    if args.deep_india || args.option_chain || args.fii_dii || args.pledge || args.buildup_enabled {
+    if args.deep_india || args.option_chain || args.fii_dii || args.buildup_enabled {
         eprintln!(
-            "Rust unusual-volume currently skips deep-india, option-chain, fii-dii, pledge, and buildup overlays."
+            "Rust unusual-volume currently skips deep-india, option-chain, fii-dii, and buildup overlays."
         );
     }
     let as_of = args
@@ -714,6 +714,9 @@ fn run_unusual_volume(args: UnusualVolumeArgs) -> anyhow::Result<()> {
         delivery_panel: &delivery_panel,
         banned_symbols: &banned,
     });
+    if args.pledge {
+        screener_rs::screeners::pledge::overlay_pledge(&mut result.events)?;
+    }
     result.events.truncate(args.limit);
     print_unusual_volume_result(&result, &args.market, as_of);
     if !args.no_output_files && !result.events.is_empty() {
@@ -965,10 +968,12 @@ fn print_unusual_volume_result(result: &UnusualVolumeResult, market: &str, as_of
         return;
     }
     println!("Unusual Volume - {} ({})", market.to_uppercase(), as_of);
-    println!("symbol,strength,direction,close,pct_change,volume,rvol,z_score,delivery_pct,notes");
+    println!(
+        "symbol,strength,direction,close,pct_change,volume,rvol,z_score,delivery_pct,pledge_pct,notes"
+    );
     for event in &result.events {
         println!(
-            "{},{},{},{:.2},{:.2},{:.0},{:.2},{},{},{}",
+            "{},{},{},{:.2},{:.2},{:.0},{:.2},{},{},{},{}",
             event.symbol,
             event.strength,
             event.direction,
@@ -978,6 +983,7 @@ fn print_unusual_volume_result(result: &UnusualVolumeResult, market: &str, as_of
             event.rvol,
             fmt_nan(event.z_score),
             fmt_opt(event.delivery_pct),
+            fmt_opt(event.pledge_pct),
             event.notes
         );
     }
@@ -987,14 +993,14 @@ fn unusual_volume_markdown(result: &UnusualVolumeResult, market: &str, as_of: Na
     let mut lines = vec![
         format!("# Unusual Volume - {} ({})", market.to_uppercase(), as_of),
         String::new(),
-        "| # | Symbol | Strength | Direction | Close | % Chg | RVOL | Z | Deliv% | Notes |"
+        "| # | Symbol | Strength | Direction | Close | % Chg | RVOL | Z | Deliv% | Pledge% | Notes |"
             .to_string(),
-        "|---|--------|----------|-----------|------:|------:|-----:|--:|-------:|-------|"
+        "|---|--------|----------|-----------|------:|------:|-----:|--:|-------:|--------:|-------|"
             .to_string(),
     ];
     for (i, event) in result.events.iter().enumerate() {
         lines.push(format!(
-            "| {} | **{}** | {} | {} | {:.2} | {:.2} | {:.2} | {} | {} | {} |",
+            "| {} | **{}** | {} | {} | {:.2} | {:.2} | {:.2} | {} | {} | {} | {} |",
             i + 1,
             event.symbol,
             event.strength,
@@ -1004,6 +1010,7 @@ fn unusual_volume_markdown(result: &UnusualVolumeResult, market: &str, as_of: Na
             event.rvol,
             fmt_nan(event.z_score),
             fmt_opt(event.delivery_pct),
+            fmt_opt(event.pledge_pct),
             event.notes
         ));
     }
