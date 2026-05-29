@@ -1327,6 +1327,9 @@ mod tests {
     }
 
     fn set_extra(bars: &mut Bars, idx: usize, name: &str, value: f64) {
+        for row in &mut bars.rows {
+            row.extra.entry(name.to_string()).or_insert(0.0);
+        }
         bars.rows[idx].extra.insert(name.to_string(), value);
     }
 
@@ -2301,7 +2304,7 @@ mod tests {
             panel: BTreeMap::from([
                 ("PENNY".to_string(), penny),
                 ("REAL".to_string(), real.clone()),
-                ("SPY".to_string(), real),
+                ("SPY".to_string(), real.clone()),
             ]),
         };
         let mut cfg = cfg();
@@ -2342,7 +2345,7 @@ mod tests {
             panel: BTreeMap::from([
                 ("LIQ".to_string(), liquid.clone()),
                 ("ILLIQ".to_string(), illiquid),
-                ("SPY".to_string(), liquid),
+                ("SPY".to_string(), liquid.clone()),
             ]),
         };
         let mut cfg = cfg();
