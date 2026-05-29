@@ -85,6 +85,47 @@ fn finite_or_zero(value: f64) -> f64 {
     if value.is_finite() { value } else { 0.0 }
 }
 
+fn max_concurrent_per_ticker(cfg: &BacktestConfig) -> usize {
+    cfg.max_concurrent_per_ticker.max(1)
+}
+
+fn raise_if_position_exists(cfg: &BacktestConfig) -> bool {
+    max_concurrent_per_ticker(cfg) == 1
+}
+
+fn active_ticker_counts(
+    slot_states: &BTreeMap<usize, Option<SlotState>>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for state in slot_states.values().flatten() {
+        *counts.entry(state.ticker.clone()).or_default() += 1;
+    }
+    counts
+}
+
+fn tickers_at_concurrency_cap(
+    slot_states: &BTreeMap<usize, Option<SlotState>>,
+    cfg: &BacktestConfig,
+) -> BTreeSet<String> {
+    let cap = max_concurrent_per_ticker(cfg);
+    active_ticker_counts(slot_states)
+        .into_iter()
+        .filter_map(|(ticker, count)| (count >= cap).then_some(ticker))
+        .collect()
+}
+
+fn ticker_below_concurrency_cap(
+    slot_states: &BTreeMap<usize, Option<SlotState>>,
+    ticker: &str,
+    cfg: &BacktestConfig,
+) -> bool {
+    active_ticker_counts(slot_states)
+        .get(ticker)
+        .copied()
+        .unwrap_or(0)
+        < max_concurrent_per_ticker(cfg)
+}
+
 fn resolve_entry_fill(
     bars: &Bars,
     signal_idx: usize,
@@ -658,7 +699,7 @@ fn run_event_driven_sim(
             state.entry_date,
             state.entry_fill,
             cfg.commission_bps,
-            true,
+            raise_if_position_exists(cfg),
         )?;
         slot_bars.insert(slot_id, bars.clone());
         reentries_left.insert(
@@ -720,7 +761,7 @@ fn run_event_driven_sim(
                 state.entry_date,
                 state.entry_fill,
                 cfg.commission_bps,
-                true,
+                raise_if_position_exists(cfg),
             )?;
             slot_states.insert(slot_id, Some(state));
             pending_reentry.remove(&slot_id);
@@ -784,7 +825,7 @@ fn run_event_driven_sim(
                     state.entry_date,
                     state.entry_fill,
                     cfg.commission_bps,
-                    true,
+                    raise_if_position_exists(cfg),
                 )?;
                 taken.insert(reserve.ticker.clone());
                 slot_bars.insert(slot_id, reserve_bars.clone());
@@ -1076,10 +1117,7 @@ pub fn run_rolling_backtest(
         if free_slots.is_empty() {
             continue;
         }
-        let mut exclude = slot_states
-            .values()
-            .filter_map(|state| state.as_ref().map(|s| s.ticker.clone()))
-            .collect::<BTreeSet<_>>();
+        let mut exclude = tickers_at_concurrency_cap(&slot_states, &cfg);
         for (ticker, entries) in &entries_by_ticker {
             let entry_cap = if cfg.allow_reentry {
                 cfg.max_reentries.saturating_add(1)
@@ -1105,10 +1143,7 @@ pub fn run_rolling_backtest(
         for slot_id in free_slots {
             while let Some(row) = candidates.first().cloned() {
                 candidates.remove(0);
-                if slot_states
-                    .values()
-                    .any(|state| state.as_ref().is_some_and(|s| s.ticker == row.ticker))
-                {
+                if !ticker_below_concurrency_cap(&slot_states, &row.ticker, &cfg) {
                     continue;
                 }
                 let Some(bars) = bars_by_tv.get(&row.ticker) else {
@@ -1138,7 +1173,7 @@ pub fn run_rolling_backtest(
                     state.entry_date,
                     state.entry_fill,
                     cfg.commission_bps,
-                    true,
+                    raise_if_position_exists(&cfg),
                 )?;
                 *entries_by_ticker.entry(row.ticker.clone()).or_default() += 1;
                 slot_bars.insert(slot_id, bars.clone());
@@ -1258,6 +1293,7 @@ mod tests {
                         volume: 100_000.0,
                         adj_close: None,
                         dividend: None,
+                        extra: BTreeMap::new(),
                     }
                 })
                 .collect(),
@@ -1277,6 +1313,7 @@ mod tests {
                     volume: 100_000.0,
                     adj_close: None,
                     dividend: None,
+                    extra: BTreeMap::new(),
                 })
                 .collect(),
         )
@@ -1287,6 +1324,42 @@ mod tests {
         bars.rows[idx].high = high;
         bars.rows[idx].low = low;
         bars.rows[idx].close = close;
+    }
+
+    fn set_extra(bars: &mut Bars, idx: usize, name: &str, value: f64) {
+        bars.rows[idx].extra.insert(name.to_string(), value);
+    }
+
+    fn trend_bars(n: usize, start_px: f64, end_px: f64, volume: f64) -> Bars {
+        let start = d(1);
+        Bars::new(
+            (0..n)
+                .map(|i| {
+                    let t = if n > 1 {
+                        i as f64 / (n - 1) as f64
+                    } else {
+                        0.0
+                    };
+                    let close = start_px + (end_px - start_px) * t;
+                    let open = if i == 0 {
+                        close - 1.0
+                    } else {
+                        start_px + (end_px - start_px) * (i - 1) as f64 / (n - 1) as f64
+                    };
+                    Bar {
+                        date: start + Duration::days(i as i64),
+                        open,
+                        high: open.max(close) + 1.0,
+                        low: open.min(close) - 1.0,
+                        close,
+                        volume,
+                        adj_close: None,
+                        dividend: None,
+                        extra: BTreeMap::new(),
+                    }
+                })
+                .collect(),
+        )
     }
 
     fn cfg() -> BacktestConfig {
@@ -1319,6 +1392,7 @@ mod tests {
             entry_limit_bps: None,
             allow_reentry: false,
             max_reentries: 0,
+            max_concurrent_per_ticker: 1,
             partial_exits: Vec::new(),
             price_adjustment: PriceAdjustment::Full,
         }
@@ -1808,5 +1882,652 @@ mod tests {
             result.trades.iter().filter(|t| t.ticker == "AAA").count(),
             2
         );
+    }
+
+    #[test]
+    fn time_exit_after_n_bars() {
+        let bars = make_bars(20);
+        let mut cfg = cfg();
+        cfg.hold = 5;
+        let trade = simulate_ticker(&bars, 3, &cfg, None)
+            .unwrap()
+            .trade
+            .unwrap();
+        assert_eq!(trade.exit_reason, ExitReason::Time);
+        assert_eq!(trade.exit_date, bars.rows[9].date);
+    }
+
+    #[test]
+    fn historical_and_rolling_match_for_single_signal_window() {
+        let mut bars = make_bars(20);
+        let spy = make_bars(20);
+        set_extra(&mut bars, 5, "entry_signal", 1.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([("AAA".to_string(), bars.clone()), ("SPY".to_string(), spy)]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = bars.rows[5].date;
+        cfg.hold = 3;
+        cfg.entry_expr = "entry_signal > 0".to_string();
+
+        let historical = run_backtest(cfg.clone(), &fetcher).unwrap();
+        let rolling =
+            run_rolling_backtest(cfg, &fetcher, bars.rows[5].date, bars.rows[9].date).unwrap();
+
+        assert_eq!(historical.trades.len(), 1);
+        assert_eq!(rolling.trades.len(), 1);
+        let h_trade = &historical.trades[0];
+        let r_trade = &rolling.trades[0];
+        assert_eq!(h_trade.entry_date, bars.rows[6].date);
+        assert_eq!(h_trade.entry_date, r_trade.entry_date);
+        assert_eq!(h_trade.exit_date, r_trade.exit_date);
+        assert_relative_eq!(h_trade.entry_price, r_trade.entry_price);
+        assert_relative_eq!(h_trade.exit_price, r_trade.exit_price);
+        assert_relative_eq!(
+            historical.metrics["total_return"],
+            rolling.metrics["total_return"]
+        );
+    }
+
+    #[test]
+    fn rolling_backtest_refills_freed_slot_from_same_day_signal() {
+        let mut active = make_flat_bars(30, 100.0);
+        let mut reserve = make_flat_bars(30, 50.0);
+        let spy = make_flat_bars(30, 400.0);
+        set_extra(&mut active, 5, "entry_signal", 1.0);
+        set_extra(&mut reserve, 7, "entry_signal", 1.0);
+        for row in &mut active.rows {
+            row.volume = 1_000_000.0;
+        }
+        for row in &mut reserve.rows {
+            row.volume = 500_000.0;
+        }
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("ACTIVE".to_string(), active.clone()),
+                ("RESERVE".to_string(), reserve.clone()),
+                ("SPY".to_string(), spy),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = active.rows[15].date;
+        cfg.hold = 1;
+        cfg.entry_expr = "entry_signal > 0".to_string();
+        cfg.tickers = Some(vec!["ACTIVE".to_string(), "RESERVE".to_string()]);
+        let result =
+            run_rolling_backtest(cfg, &fetcher, active.rows[0].date, active.rows[15].date).unwrap();
+        let active_trade = result
+            .trades
+            .iter()
+            .find(|trade| trade.ticker == "ACTIVE")
+            .unwrap();
+        let reserve_trade = result
+            .trades
+            .iter()
+            .find(|trade| trade.ticker == "RESERVE")
+            .unwrap();
+        assert_eq!(active_trade.exit_date, active.rows[7].date);
+        assert_eq!(reserve_trade.signal_date, active_trade.exit_date);
+        assert_eq!(reserve_trade.entry_date, reserve.rows[8].date);
+    }
+
+    #[test]
+    fn rolling_backtest_force_closes_entry_on_window_end() {
+        let mut bars = make_bars(12);
+        let spy = make_bars(12);
+        set_extra(&mut bars, 5, "entry_signal", 1.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([("AAA".to_string(), bars.clone()), ("SPY".to_string(), spy)]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = bars.rows[6].date;
+        cfg.hold = 20;
+        cfg.entry_expr = "entry_signal > 0".to_string();
+        let result =
+            run_rolling_backtest(cfg, &fetcher, bars.rows[0].date, bars.rows[6].date).unwrap();
+        assert_eq!(result.trades.len(), 1);
+        let trade = &result.trades[0];
+        assert_eq!(trade.signal_date, bars.rows[5].date);
+        assert_eq!(trade.entry_date, bars.rows[6].date);
+        assert_eq!(trade.exit_date, bars.rows[6].date);
+        assert_eq!(trade.exit_reason, ExitReason::Eod);
+        assert_eq!(result.equity_curve.last().unwrap().0, bars.rows[6].date);
+    }
+
+    #[test]
+    fn run_backtest_rs_breakout_us_selects_relative_strength_breakout_signal() {
+        let mut aaa = trend_bars(80, 100.0, 150.0, 100_000.0);
+        let mut bbb = trend_bars(80, 100.0, 108.0, 100_000.0);
+        let spy = trend_bars(80, 100.0, 110.0, 100_000.0);
+        aaa.rows[69].volume = 250_000.0;
+        aaa.rows[70].open = 151.0;
+        set_extra(&mut aaa, 69, "rs_breakout_entry", 1.0);
+        set_extra(&mut bbb, 69, "rs_breakout_entry", 0.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA".to_string(), aaa.clone()),
+                ("BBB".to_string(), bbb),
+                ("SPY".to_string(), spy),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = aaa.rows[69].date;
+        cfg.hold = 3;
+        cfg.entry_expr = "rs_breakout_entry > 0".to_string();
+        cfg.strategy_name = Some("rs_breakout".to_string());
+        cfg.tickers = Some(vec!["AAA".to_string(), "BBB".to_string()]);
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        assert_eq!(result.selection[0].ticker, "AAA");
+        assert_eq!(result.trades[0].ticker, "AAA");
+        assert_eq!(result.trades[0].entry_date, aaa.rows[70].date);
+    }
+
+    #[test]
+    fn run_backtest_rs_breakout_india_filters_to_delivery_qualified_signal() {
+        let mut aaa = trend_bars(80, 100.0, 150.0, 100_000.0);
+        let mut bbb = trend_bars(80, 100.0, 149.0, 100_000.0);
+        let nifty = trend_bars(80, 100.0, 110.0, 100_000.0);
+        set_extra(&mut aaa, 69, "rs_breakout_entry", 1.0);
+        set_extra(&mut bbb, 69, "rs_breakout_entry", 0.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA.NS".to_string(), aaa.clone()),
+                ("BBB.NS".to_string(), bbb),
+                ("^NSEI".to_string(), nifty),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.market = "india".to_string();
+        cfg.benchmark = "^NSEI".to_string();
+        cfg.as_of = aaa.rows[69].date;
+        cfg.hold = 3;
+        cfg.top = 2;
+        cfg.entry_expr = "rs_breakout_entry > 0".to_string();
+        cfg.strategy_name = Some("rs_breakout".to_string());
+        cfg.tickers = Some(vec!["AAA".to_string(), "BBB".to_string()]);
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        assert_eq!(result.selection[0].ticker, "AAA");
+        assert_eq!(
+            result
+                .trades
+                .iter()
+                .map(|trade| trade.ticker.as_str())
+                .collect::<Vec<_>>(),
+            vec!["AAA"]
+        );
+    }
+
+    #[test]
+    fn rolling_rs_breakout_us_smoke() {
+        let mut aaa = trend_bars(80, 100.0, 150.0, 100_000.0);
+        let bbb = trend_bars(80, 100.0, 108.0, 100_000.0);
+        let spy = trend_bars(80, 100.0, 110.0, 100_000.0);
+        set_extra(&mut aaa, 69, "rs_breakout_entry", 1.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA".to_string(), aaa.clone()),
+                ("BBB".to_string(), bbb),
+                ("SPY".to_string(), spy),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = aaa.rows[75].date;
+        cfg.hold = 3;
+        cfg.entry_expr = "rs_breakout_entry > 0".to_string();
+        cfg.strategy_name = Some("rs_breakout".to_string());
+        cfg.tickers = Some(vec!["AAA".to_string(), "BBB".to_string()]);
+        let result =
+            run_rolling_backtest(cfg, &fetcher, aaa.rows[65].date, aaa.rows[75].date).unwrap();
+        assert!(!result.trades.is_empty());
+        assert_eq!(result.trades[0].ticker, "AAA");
+    }
+
+    #[test]
+    fn rolling_rs_breakout_india_delivery_filter() {
+        let mut aaa = trend_bars(80, 100.0, 150.0, 100_000.0);
+        let mut bbb = trend_bars(80, 100.0, 149.0, 100_000.0);
+        let nifty = trend_bars(80, 100.0, 110.0, 100_000.0);
+        set_extra(&mut aaa, 69, "rs_breakout_entry", 1.0);
+        set_extra(&mut bbb, 69, "rs_breakout_entry", 0.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA.NS".to_string(), aaa.clone()),
+                ("BBB.NS".to_string(), bbb),
+                ("^NSEI".to_string(), nifty),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.market = "india".to_string();
+        cfg.benchmark = "^NSEI".to_string();
+        cfg.as_of = aaa.rows[75].date;
+        cfg.hold = 3;
+        cfg.top = 2;
+        cfg.entry_expr = "rs_breakout_entry > 0".to_string();
+        cfg.strategy_name = Some("rs_breakout".to_string());
+        cfg.tickers = Some(vec!["AAA".to_string(), "BBB".to_string()]);
+        let result =
+            run_rolling_backtest(cfg, &fetcher, aaa.rows[65].date, aaa.rows[75].date).unwrap();
+        assert_eq!(
+            result
+                .trades
+                .iter()
+                .map(|trade| trade.ticker.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["AAA"])
+        );
+    }
+
+    #[test]
+    fn cash_stays_cash_after_exit_two_ticker_portfolio_all_days() {
+        let mut bars_a = make_bars(20);
+        let mut bars_b = make_bars(20);
+        bars_a.rows[4].open = 100.0;
+        bars_a.rows[6].close = 110.0;
+        bars_b.rows[4].open = 50.0;
+        let trade_a = simulate_ticker(
+            &bars_a,
+            3,
+            &{
+                let mut c = cfg();
+                c.hold = 2;
+                c
+            },
+            None,
+        )
+        .unwrap()
+        .trade
+        .unwrap();
+        let trade_b = simulate_ticker(
+            &bars_b,
+            3,
+            &{
+                let mut c = cfg();
+                c.hold = 15;
+                c
+            },
+            None,
+        )
+        .unwrap()
+        .trade
+        .unwrap();
+        let mut p_a = Portfolio::new(100_000.0, 2).unwrap();
+        p_a.assign("AAA", 1, bars_a.rows[3].date);
+        p_a.open("AAA", trade_a.entry_date, trade_a.entry_price, 0.0, true)
+            .unwrap();
+        let trade_a = p_a
+            .close(
+                "AAA",
+                trade_a.exit_date,
+                trade_a.exit_price,
+                trade_a.exit_reason,
+                0.0,
+            )
+            .unwrap();
+        let mut p_b = Portfolio::new(100_000.0, 2).unwrap();
+        p_b.assign("BBB", 2, bars_b.rows[3].date);
+        p_b.open("BBB", trade_b.entry_date, trade_b.entry_price, 0.0, true)
+            .unwrap();
+        let trade_b = p_b
+            .close(
+                "BBB",
+                trade_b.exit_date,
+                trade_b.exit_price,
+                trade_b.exit_reason,
+                0.0,
+            )
+            .unwrap();
+        let panel = BTreeMap::from([
+            ("AAA".to_string(), bars_a.clone()),
+            ("BBB".to_string(), bars_b.clone()),
+        ]);
+        let equity = build_equity_curve(
+            &bars_a.dates(),
+            &[trade_a.clone(), trade_b.clone()],
+            &panel,
+            100_000.0,
+        );
+        let static_cash = 100_000.0 - trade_a.entry_cost - trade_b.entry_cost + trade_a.exit_value;
+        let final_cash = 100_000.0 - trade_a.entry_cost + trade_a.exit_value - trade_b.entry_cost
+            + trade_b.exit_value;
+        for (day, value) in equity.iter().filter(|(day, _)| *day > trade_a.exit_date) {
+            let expected = if *day > trade_b.exit_date {
+                final_cash
+            } else {
+                let b_close = bars_b
+                    .rows
+                    .iter()
+                    .find(|bar| bar.date == *day)
+                    .unwrap()
+                    .close;
+                static_cash + trade_b.shares * b_close
+            };
+            assert_relative_eq!(*value, expected);
+        }
+    }
+
+    #[test]
+    fn output_rank_preserves_selection_rank_not_realized_return() {
+        let mut aaa = make_bars(60);
+        let mut bbb = make_bars(60);
+        let mut ccc = make_bars(60);
+        for row in &mut aaa.rows {
+            row.volume = 1_000_000.0;
+        }
+        for row in &mut bbb.rows {
+            row.volume = 500_000.0;
+        }
+        for row in &mut ccc.rows {
+            row.volume = 100_000.0;
+        }
+        for bars in [&mut aaa, &mut bbb, &mut ccc] {
+            bars.rows[39].close += 20.0;
+        }
+        for i in 40..60 {
+            set_bar(&mut aaa, i, 50.0, 51.0, 49.0, 50.0);
+            set_bar(&mut ccc, i, 40.0, 41.0, 39.0, 40.0);
+        }
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA".to_string(), aaa.clone()),
+                ("BBB".to_string(), bbb.clone()),
+                ("CCC".to_string(), ccc),
+                ("SPY".to_string(), bbb),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = aaa.rows[39].date;
+        cfg.hold = 10;
+        cfg.top = 3;
+        cfg.tickers = Some(vec![
+            "AAA".to_string(),
+            "BBB".to_string(),
+            "CCC".to_string(),
+        ]);
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        let mut trades = result.trades.clone();
+        trades.sort_by_key(|trade| trade.rank);
+        assert_eq!(
+            trades
+                .iter()
+                .map(|trade| (trade.rank, trade.ticker.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "AAA"), (2, "BBB"), (3, "CCC")]
+        );
+    }
+
+    #[test]
+    fn insufficient_lookback_emits_warning() {
+        let bars = make_bars(30);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA".to_string(), bars.clone()),
+                ("SPY".to_string(), bars.clone()),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = bars.rows.last().unwrap().date;
+        cfg.entry_expr = "close > sma(close, 200)".to_string();
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("insufficient lookback"))
+        );
+    }
+
+    #[test]
+    fn run_backtest_errors_when_no_universe_provided() {
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::new(),
+        };
+        let mut cfg = cfg();
+        cfg.tickers = None;
+        cfg.universe_file = None;
+        let err = run_backtest(cfg, &fetcher).unwrap_err();
+        assert!(err.to_string().contains("No universe provided"));
+    }
+
+    #[test]
+    fn min_price_filter_excludes_penny_stocks() {
+        let mut penny = make_bars(60);
+        let mut real = make_bars(60);
+        for i in 37..40 {
+            penny.rows[i].close = 0.30;
+        }
+        penny.rows[39].close = 0.80;
+        real.rows[39].close += 5.0;
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("PENNY".to_string(), penny),
+                ("REAL".to_string(), real.clone()),
+                ("SPY".to_string(), real),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = real.rows[39].date;
+        cfg.hold = 3;
+        cfg.top = 5;
+        cfg.tickers = Some(vec!["PENNY".to_string(), "REAL".to_string()]);
+        cfg.min_price = Some(1.0);
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        let traded = result
+            .trades
+            .iter()
+            .map(|trade| trade.ticker.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(!traded.contains("PENNY"));
+        assert!(traded.contains("REAL"));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("filtered") && warning.contains("price/liquidity"))
+        );
+    }
+
+    #[test]
+    fn min_avg_dollar_volume_filter_excludes_illiquid() {
+        let mut liquid = make_bars(60);
+        let mut illiquid = make_bars(60);
+        for row in &mut liquid.rows {
+            row.volume = 50_000_000.0;
+        }
+        for row in &mut illiquid.rows {
+            row.volume = 1.0;
+        }
+        liquid.rows[39].close += 5.0;
+        illiquid.rows[39].close += 5.0;
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("LIQ".to_string(), liquid.clone()),
+                ("ILLIQ".to_string(), illiquid),
+                ("SPY".to_string(), liquid),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = liquid.rows[39].date;
+        cfg.hold = 3;
+        cfg.top = 5;
+        cfg.tickers = Some(vec!["LIQ".to_string(), "ILLIQ".to_string()]);
+        cfg.min_avg_dollar_volume = Some(1_000_000.0);
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        let traded = result
+            .trades
+            .iter()
+            .map(|trade| trade.ticker.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(traded.contains("LIQ"));
+        assert!(!traded.contains("ILLIQ"));
+    }
+
+    #[test]
+    fn no_reinvest_matches_legacy_leaves_cash_idle() {
+        let mut active = make_bars(60);
+        let mut reserve = make_flat_bars(60, 100.0);
+        active.rows[39].close += 5.0;
+        active.rows[40].open = 100.0;
+        active.rows[41].low = 90.0;
+        active.rows[41].close = 91.0;
+        reserve.rows[39].close = 105.0;
+        reserve.rows[41].close = 105.0;
+        for row in &mut active.rows {
+            row.volume = 1_000_000.0;
+        }
+        for row in &mut reserve.rows {
+            row.volume = 100_000.0;
+        }
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("ACTIVE".to_string(), active.clone()),
+                ("RESERVE".to_string(), reserve.clone()),
+                ("SPY".to_string(), reserve),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = active.rows[39].date;
+        cfg.hold = 10;
+        cfg.tickers = Some(vec!["ACTIVE".to_string(), "RESERVE".to_string()]);
+        cfg.stop_loss = Some(0.05);
+        cfg.reinvest = false;
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        let traded = result
+            .trades
+            .iter()
+            .map(|trade| trade.ticker.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(traded.contains("ACTIVE"));
+        assert!(!traded.contains("RESERVE"));
+    }
+
+    #[test]
+    fn reserve_filter_rechecked_on_exit_day() {
+        let mut active = make_bars(60);
+        let mut crash = make_flat_bars(60, 5.0);
+        let mut backup = make_flat_bars(60, 100.0);
+        active.rows[39].close += 5.0;
+        crash.rows[39].close = 8.0;
+        backup.rows[39].close = 105.0;
+        active.rows[40].open = 100.0;
+        active.rows[41].low = 90.0;
+        active.rows[41].close = 91.0;
+        for i in 40..45 {
+            set_bar(&mut crash, i, 0.5, 0.6, 0.4, 0.5);
+        }
+        crash.rows[41].close = 0.8;
+        backup.rows[41].close = 105.0;
+        for row in &mut active.rows {
+            row.volume = 1_000_000.0;
+        }
+        for row in &mut crash.rows {
+            row.volume = 500_000.0;
+        }
+        for row in &mut backup.rows {
+            row.volume = 100_000.0;
+        }
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("ACTIVE".to_string(), active.clone()),
+                ("CRASH".to_string(), crash),
+                ("BACKUP".to_string(), backup.clone()),
+                ("SPY".to_string(), backup),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = active.rows[39].date;
+        cfg.hold = 10;
+        cfg.tickers = Some(vec![
+            "ACTIVE".to_string(),
+            "CRASH".to_string(),
+            "BACKUP".to_string(),
+        ]);
+        cfg.stop_loss = Some(0.05);
+        cfg.min_price = Some(1.0);
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        let traded = result
+            .trades
+            .iter()
+            .map(|trade| trade.ticker.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(traded.contains("ACTIVE"));
+        assert!(!traded.contains("CRASH"));
+        assert!(traded.contains("BACKUP"));
+    }
+
+    #[test]
+    fn invested_return_metric_ignores_idle_cash() {
+        let trade = Trade {
+            ticker: "X".to_string(),
+            rank: 1,
+            signal_date: d(2),
+            entry_date: d(3),
+            entry_price: 100.0,
+            exit_date: d(5),
+            exit_price: 110.0,
+            exit_reason: ExitReason::Time,
+            shares: 100.0,
+            entry_cost: 10_000.0,
+            exit_value: 11_000.0,
+            pnl: 1_000.0,
+            return_pct: 0.10,
+            dividend_income: 0.0,
+        };
+        let equity = vec![(d(3), 100_000.0), (d(4), 100_500.0), (d(5), 101_000.0)];
+        let bench = vec![(d(3), 100.0), (d(4), 100.0), (d(5), 100.0)];
+        let metrics = compute_metrics(&equity, &bench, &[trade], 10, 1);
+        assert_relative_eq!(metrics["invested_return"], 0.10, epsilon = 1e-6);
+        assert_relative_eq!(metrics["total_return"], 0.01, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn metrics_on_known_ramp_series() {
+        let start = d(1);
+        let equity = (0..252)
+            .map(|i| {
+                (
+                    start + Duration::days(i as i64),
+                    100_000.0 + 10_000.0 * i as f64 / 251.0,
+                )
+            })
+            .collect::<Vec<_>>();
+        let metrics = compute_metrics(&equity, &equity, &[], 1, 1);
+        assert_relative_eq!(metrics["total_return"], 0.10, epsilon = 1e-6);
+        assert_relative_eq!(metrics["cagr"], 0.10, epsilon = 0.01);
+        assert_relative_eq!(metrics["max_drawdown"], 0.0, epsilon = 1e-9);
+        assert_relative_eq!(metrics["beta"], 1.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn rolling_backtest_honors_max_concurrent_per_ticker() {
+        let mut bars = make_flat_bars(12, 100.0);
+        for idx in 0..8 {
+            set_extra(&mut bars, idx, "entry_signal", 1.0);
+        }
+        let spy = make_flat_bars(12, 400.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([("AAA".to_string(), bars.clone()), ("SPY".to_string(), spy)]),
+        };
+        let mut cfg = cfg();
+        cfg.top = 2;
+        cfg.hold = 5;
+        cfg.entry_expr = "entry_signal > 0".to_string();
+        cfg.allow_reentry = true;
+        cfg.max_reentries = 10;
+        cfg.max_concurrent_per_ticker = 2;
+        let result =
+            run_rolling_backtest(cfg, &fetcher, bars.rows[0].date, bars.rows[8].date).unwrap();
+        let aaa = result
+            .trades
+            .iter()
+            .filter(|trade| trade.ticker == "AAA")
+            .collect::<Vec<_>>();
+        assert!(aaa.len() >= 2);
+        for day in bars.rows.iter().map(|bar| bar.date) {
+            let open_count = aaa
+                .iter()
+                .filter(|trade| day >= trade.entry_date && day <= trade.exit_date)
+                .count();
+            assert!(open_count <= 2);
+        }
     }
 }

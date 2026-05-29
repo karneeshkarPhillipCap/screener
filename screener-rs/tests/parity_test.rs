@@ -4,6 +4,7 @@ use chrono::{Duration, NaiveDate};
 use screener_rs::data::{Bar, Bars};
 use screener_rs::indicators::{atr, ema, rsi, sma, supertrend_dir};
 use screener_rs::screeners::rs_breakout::supertrend_values;
+use std::collections::BTreeMap;
 
 const CHECKPOINTS: [usize; 6] = [19, 20, 50, 199, 200, 259];
 const SMA_20_REF: [f64; 6] = [
@@ -52,6 +53,7 @@ fn synthetic_bars(n: usize) -> Bars {
                     volume: 100_000.0,
                     adj_close: None,
                     dividend: None,
+                    extra: BTreeMap::new(),
                 }
             })
             .collect(),

@@ -1,5 +1,6 @@
 use anyhow::Context;
 use chrono::{Datelike, Duration, NaiveDate};
+use rayon::prelude::*;
 use reqwest::blocking::Client;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
@@ -128,14 +129,20 @@ impl NseClient {
             .iter()
             .map(|s| s.trim().to_uppercase())
             .collect::<BTreeSet<_>>();
-        let mut rows = Vec::new();
         let earliest = as_of - Duration::days(history_days);
         let mut day = as_of;
+        let mut days = Vec::new();
         while day >= earliest {
-            if day.weekday().number_from_monday() <= 5
-                && let Ok(cash) = self.fetch_cash_bhavcopy(day)
-            {
-                rows.extend(cash.into_iter().filter_map(|row| {
+            if day.weekday().number_from_monday() <= 5 {
+                days.push(day);
+            }
+            day -= Duration::days(1);
+        }
+        let mut rows = days
+            .par_iter()
+            .filter_map(|day| self.fetch_cash_bhavcopy(*day).ok())
+            .flat_map_iter(|cash| {
+                cash.into_iter().filter_map(|row| {
                     sym_set.contains(&row.symbol).then_some(DeliveryRow {
                         symbol: row.symbol,
                         date: row.date,
@@ -143,10 +150,9 @@ impl NseClient {
                         deliv_qty: row.deliv_qty,
                         deliv_per: row.deliv_per,
                     })
-                }));
-            }
-            day -= Duration::days(1);
-        }
+                })
+            })
+            .collect::<Vec<_>>();
         rows.sort_by(|a, b| (&a.symbol, a.date).cmp(&(&b.symbol, b.date)));
         rows
     }

@@ -404,6 +404,7 @@ mod tests {
                         volume,
                         adj_close: None,
                         dividend: None,
+                        extra: BTreeMap::new(),
                     }
                 })
                 .collect(),

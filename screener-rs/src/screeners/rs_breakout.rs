@@ -313,6 +313,7 @@ mod tests {
                         volume: if i == 69 { volume_last } else { 100.0 },
                         adj_close: None,
                         dividend: None,
+                        extra: BTreeMap::new(),
                     }
                 })
                 .collect(),
@@ -332,6 +333,7 @@ mod tests {
                     volume: 100.0,
                     adj_close: None,
                     dividend: None,
+                    extra: BTreeMap::new(),
                 })
                 .collect(),
         )

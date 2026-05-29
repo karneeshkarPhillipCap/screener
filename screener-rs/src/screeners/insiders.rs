@@ -2,6 +2,7 @@ use crate::providers::screener_in::ScreenerInClient;
 use crate::screeners::models::ScreenRow;
 use anyhow::Context;
 use chrono::{Duration, NaiveDate, Utc};
+use rayon::prelude::*;
 use reqwest::blocking::Client;
 use serde_json::Value;
 
@@ -53,12 +54,21 @@ fn screen_india_promoters(
     }
     let client = ScreenerInClient::new()?;
     let mut out = Vec::new();
-    for base in universe {
-        let Some(name) = base.text("name").or_else(|| base.text("ticker")) else {
-            continue;
-        };
-        let symbol = india_symbol(&name);
-        let Some(snapshot) = client.promoter_snapshot(&symbol).unwrap_or_default() else {
+    let bases = universe
+        .iter()
+        .filter_map(|base| {
+            base.text("name")
+                .or_else(|| base.text("ticker"))
+                .map(|name| (base, india_symbol(&name)))
+        })
+        .collect::<Vec<_>>();
+    let symbols = bases
+        .iter()
+        .map(|(_, symbol)| symbol.clone())
+        .collect::<Vec<_>>();
+    let snapshots = client.promoter_snapshots(&symbols);
+    for ((base, symbol), (_, snapshot)) in bases.into_iter().zip(snapshots) {
+        let Some(snapshot) = snapshot else {
             continue;
         };
         if snapshot.promoter_change <= request.min_change_pct {
@@ -106,36 +116,32 @@ fn screen_us_insiders(
         .user_agent("Mozilla/5.0 (compatible; screener-rs/0.1)")
         .build()?;
     let cutoff = Utc::now().date_naive() - Duration::days(FMP_WINDOW_DAYS);
-    let mut out = Vec::new();
-    for base in universe {
-        let Some(symbol) = base
-            .text("name")
-            .or_else(|| base.text("ticker"))
-            .map(|s| bare_symbol(&s))
-        else {
-            continue;
-        };
-        let Some(agg) = fetch_fmp_aggregate(&client, &symbol, &api_key, cutoff).unwrap_or_default()
-        else {
-            continue;
-        };
-        if agg.net_shares_6m <= 0.0 {
-            continue;
-        }
-        if request.min_yf_net_pct.is_some() {
-            anyhow::bail!(
-                "--min-yf-net-pct depends on Yahoo insider-purchases percentages; Rust US promoter-buys currently uses FMP Form 4 share counts"
-            );
-        }
-        let mut row = base.clone();
-        row.name = Some(symbol);
-        row.set_numeric("fmp_net_shares_6m", agg.net_shares_6m);
-        row.set_numeric("fmp_buy_shares_6m", agg.buy_shares_6m);
-        row.set_numeric("fmp_sell_shares_6m", agg.sell_shares_6m);
-        row.set_numeric("fmp_buy_trans_6m", agg.buy_trans_6m as f64);
-        row.set_numeric("fmp_sell_trans_6m", agg.sell_trans_6m as f64);
-        out.push(row);
+    if request.min_yf_net_pct.is_some() {
+        anyhow::bail!(
+            "--min-yf-net-pct depends on Yahoo insider-purchases percentages; Rust US promoter-buys currently uses FMP Form 4 share counts"
+        );
     }
+    let mut out = universe
+        .par_iter()
+        .filter_map(|base| {
+            let symbol = base
+                .text("name")
+                .or_else(|| base.text("ticker"))
+                .map(|s| bare_symbol(&s))?;
+            let agg = fetch_fmp_aggregate(&client, &symbol, &api_key, cutoff).ok()??;
+            if agg.net_shares_6m <= 0.0 {
+                return None;
+            }
+            let mut row = base.clone();
+            row.name = Some(symbol);
+            row.set_numeric("fmp_net_shares_6m", agg.net_shares_6m);
+            row.set_numeric("fmp_buy_shares_6m", agg.buy_shares_6m);
+            row.set_numeric("fmp_sell_shares_6m", agg.sell_shares_6m);
+            row.set_numeric("fmp_buy_trans_6m", agg.buy_trans_6m as f64);
+            row.set_numeric("fmp_sell_trans_6m", agg.sell_trans_6m as f64);
+            Some(row)
+        })
+        .collect::<Vec<_>>();
     out.sort_by(|a, b| {
         b.numeric("fmp_net_shares_6m")
             .unwrap_or(f64::NEG_INFINITY)

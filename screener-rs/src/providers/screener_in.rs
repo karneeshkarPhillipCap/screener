@@ -1,4 +1,5 @@
 use anyhow::Context;
+use rayon::prelude::*;
 use regex::Regex;
 use reqwest::blocking::Client;
 
@@ -41,6 +42,21 @@ impl ScreenerInClient {
             .text()
             .context("failed to read screener.in HTML")?;
         Ok(parse_promoter_snapshot(symbol, &html))
+    }
+
+    pub fn promoter_snapshots(
+        &self,
+        symbols: &[String],
+    ) -> Vec<(String, Option<PromoterSnapshot>)> {
+        symbols
+            .par_iter()
+            .map(|symbol| {
+                (
+                    symbol.clone(),
+                    self.promoter_snapshot(symbol).unwrap_or_default(),
+                )
+            })
+            .collect()
     }
 }
 
