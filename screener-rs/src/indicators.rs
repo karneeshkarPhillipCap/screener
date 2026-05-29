@@ -151,16 +151,21 @@ pub fn supertrend_dir(bars: &Bars, length: usize, multiplier: f64) -> Vec<f64> {
     let atr_values = atr(bars, length);
     let mut upper = vec![f64::NAN; bars.len()];
     let mut lower = vec![f64::NAN; bars.len()];
+    let mut supertrend = vec![f64::NAN; bars.len()];
     let mut direction = vec![f64::NAN; bars.len()];
     for i in 0..bars.len() {
         let bar = &bars.rows[i];
         let hl2 = (bar.high + bar.low) / 2.0;
         let basic_upper = hl2 + multiplier * atr_values[i];
         let basic_lower = hl2 - multiplier * atr_values[i];
-        if i == 0 || atr_values[i].is_nan() {
+        if atr_values[i].is_nan() {
+            continue;
+        }
+        if i == 0 || upper[i - 1].is_nan() {
             upper[i] = basic_upper;
             lower[i] = basic_lower;
-            direction[i] = 1.0;
+            supertrend[i] = if bar.close >= hl2 { lower[i] } else { upper[i] };
+            direction[i] = if supertrend[i] == lower[i] { -1.0 } else { 1.0 };
             continue;
         }
         upper[i] = if basic_upper < upper[i - 1] || bars.rows[i - 1].close > upper[i - 1] {
@@ -173,13 +178,18 @@ pub fn supertrend_dir(bars: &Bars, length: usize, multiplier: f64) -> Vec<f64> {
         } else {
             lower[i - 1]
         };
-        direction[i] = if direction[i - 1] < 0.0 {
-            if bar.close > upper[i] { 1.0 } else { -1.0 }
+        supertrend[i] = if supertrend[i - 1] == upper[i - 1] {
+            if bar.close > upper[i] {
+                lower[i]
+            } else {
+                upper[i]
+            }
         } else if bar.close < lower[i] {
-            -1.0
+            upper[i]
         } else {
-            1.0
+            lower[i]
         };
+        direction[i] = if supertrend[i] == lower[i] { -1.0 } else { 1.0 };
     }
     direction
 }

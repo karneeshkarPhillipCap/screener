@@ -4,6 +4,7 @@ pub mod garp;
 pub mod insiders;
 pub mod models;
 pub mod operator;
+pub mod pledge;
 pub mod rs_breakout;
 pub mod unusual_volume;
 

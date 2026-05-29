@@ -27,6 +27,7 @@ pub struct UnusualVolumeEvent {
     pub delivery_pct: Option<f64>,
     pub delivery_rvol: Option<f64>,
     pub conviction_score: Option<f64>,
+    pub pledge_pct: Option<f64>,
     pub market_cap: Option<f64>,
     pub notes: String,
 }
@@ -149,6 +150,7 @@ pub fn detect_ticker(
         delivery_pct: None,
         delivery_rvol: None,
         conviction_score: None,
+        pledge_pct: None,
         market_cap: None,
         notes: String::new(),
     })

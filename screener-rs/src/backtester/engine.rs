@@ -1056,6 +1056,7 @@ pub fn run_rolling_backtest(
     let mut slot_states: BTreeMap<usize, Option<SlotState>> =
         (0..cfg.top.max(1)).map(|slot| (slot, None)).collect();
     let mut slot_bars: BTreeMap<usize, Bars> = BTreeMap::new();
+    let mut entries_by_ticker: BTreeMap<String, usize> = BTreeMap::new();
     let mut selection_rows = Vec::new();
 
     for day in master_dates.iter().copied() {
@@ -1075,10 +1076,20 @@ pub fn run_rolling_backtest(
         if free_slots.is_empty() {
             continue;
         }
-        let exclude = slot_states
+        let mut exclude = slot_states
             .values()
             .filter_map(|state| state.as_ref().map(|s| s.ticker.clone()))
             .collect::<BTreeSet<_>>();
+        for (ticker, entries) in &entries_by_ticker {
+            let entry_cap = if cfg.allow_reentry {
+                cfg.max_reentries.saturating_add(1)
+            } else {
+                1
+            };
+            if *entries >= entry_cap {
+                exclude.insert(ticker.clone());
+            }
+        }
         let mut candidates = candidate_rows_for_day(
             day,
             &bars_by_tv,
@@ -1129,6 +1140,7 @@ pub fn run_rolling_backtest(
                     cfg.commission_bps,
                     true,
                 )?;
+                *entries_by_ticker.entry(row.ticker.clone()).or_default() += 1;
                 slot_bars.insert(slot_id, bars.clone());
                 slot_states.insert(slot_id, Some(state));
                 selection_rows.push(row);
@@ -1202,6 +1214,7 @@ mod tests {
     use crate::backtester::slippage::SlippageModel;
     use crate::data::{Bar, Bars};
     use approx::assert_relative_eq;
+    use chrono::Duration;
 
     struct StubPriceFetcher {
         panel: PricePanel,
@@ -1231,12 +1244,13 @@ mod tests {
     }
 
     fn make_bars(n: usize) -> Bars {
+        let start = d(1);
         Bars::new(
             (0..n)
                 .map(|i| {
                     let px = 100.0 + i as f64;
                     Bar {
-                        date: d(1 + i as u32),
+                        date: start + Duration::days(i as i64),
                         open: px,
                         high: px + 1.0,
                         low: px - 1.0,
@@ -1248,6 +1262,31 @@ mod tests {
                 })
                 .collect(),
         )
+    }
+
+    fn make_flat_bars(n: usize, price: f64) -> Bars {
+        let start = d(1);
+        Bars::new(
+            (0..n)
+                .map(|i| Bar {
+                    date: start + Duration::days(i as i64),
+                    open: price,
+                    high: price + 1.0,
+                    low: price - 1.0,
+                    close: price,
+                    volume: 100_000.0,
+                    adj_close: None,
+                    dividend: None,
+                })
+                .collect(),
+        )
+    }
+
+    fn set_bar(bars: &mut Bars, idx: usize, open: f64, high: f64, low: f64, close: f64) {
+        bars.rows[idx].open = open;
+        bars.rows[idx].high = high;
+        bars.rows[idx].low = low;
+        bars.rows[idx].close = close;
     }
 
     fn cfg() -> BacktestConfig {
@@ -1343,6 +1382,135 @@ mod tests {
     }
 
     #[test]
+    fn take_profit_triggers_from_high() {
+        let mut bars = make_bars(10);
+        set_bar(&mut bars, 4, 100.0, 100.5, 99.8, 100.2);
+        set_bar(&mut bars, 5, 100.2, 130.0, 100.0, 110.0);
+        let mut cfg = cfg();
+        cfg.hold = 10;
+        cfg.take_profit = Some(0.10);
+        let trade = simulate_ticker(&bars, 3, &cfg, None)
+            .unwrap()
+            .trade
+            .unwrap();
+        assert_eq!(trade.exit_reason, ExitReason::Target);
+        assert_relative_eq!(trade.exit_price, 110.0);
+    }
+
+    #[test]
+    fn same_bar_trail_and_target_trail_wins() {
+        let mut bars = make_bars(10);
+        set_bar(&mut bars, 4, 100.0, 100.5, 99.5, 100.0);
+        set_bar(&mut bars, 5, 100.0, 109.0, 99.8, 109.0);
+        set_bar(&mut bars, 6, 109.0, 115.0, 95.0, 100.0);
+        let mut cfg = cfg();
+        cfg.hold = 10;
+        cfg.trailing_stop = Some(0.10);
+        cfg.take_profit = Some(0.10);
+        let trade = simulate_ticker(&bars, 3, &cfg, None)
+            .unwrap()
+            .trade
+            .unwrap();
+        assert_eq!(trade.exit_reason, ExitReason::Trail);
+        assert_relative_eq!(trade.exit_price, 109.0 * 0.9);
+    }
+
+    #[test]
+    fn trailing_stop_tracks_peak() {
+        let mut bars = make_bars(10);
+        set_bar(&mut bars, 4, 100.0, 100.5, 99.5, 100.0);
+        set_bar(&mut bars, 5, 100.0, 120.0, 99.8, 118.0);
+        set_bar(&mut bars, 6, 118.0, 118.5, 100.0, 101.0);
+        let mut cfg = cfg();
+        cfg.hold = 10;
+        cfg.trailing_stop = Some(0.10);
+        let trade = simulate_ticker(&bars, 3, &cfg, None)
+            .unwrap()
+            .trade
+            .unwrap();
+        assert_eq!(trade.exit_reason, ExitReason::Trail);
+        assert_relative_eq!(trade.exit_price, 120.0 * 0.9);
+    }
+
+    #[test]
+    fn exit_expression_triggers_at_close() {
+        let mut bars = make_bars(15);
+        for i in 5..7 {
+            bars.rows[i].close = bars.rows[i].open + 1.0;
+        }
+        bars.rows[7].close = bars.rows[7].open - 2.0;
+        let ast = crate::pine::parse("close < open").unwrap();
+        let mut cfg = cfg();
+        cfg.hold = 20;
+        let trade = simulate_ticker(&bars, 3, &cfg, Some(&ast))
+            .unwrap()
+            .trade
+            .unwrap();
+        assert_eq!(trade.exit_reason, ExitReason::ExitExpr);
+        assert_eq!(trade.exit_date, bars.rows[7].date);
+        assert_relative_eq!(trade.exit_price, bars.rows[7].close);
+    }
+
+    #[test]
+    fn slippage_reduces_return_vs_zero_slip() {
+        let bars = make_bars(20);
+        let mut slipped_cfg = cfg();
+        slipped_cfg.hold = 5;
+        slipped_cfg.slippage_model = SlippageModel::Fixed { bps: 50.0 };
+        let mut zero_cfg = cfg();
+        zero_cfg.hold = 5;
+        let zero = simulate_ticker(&bars, 3, &zero_cfg, None)
+            .unwrap()
+            .trade
+            .unwrap();
+        let slipped = simulate_ticker(&bars, 3, &slipped_cfg, None)
+            .unwrap()
+            .trade
+            .unwrap();
+        assert!(slipped.entry_price > zero.entry_price);
+        assert!(slipped.exit_price < zero.exit_price);
+    }
+
+    #[test]
+    fn commission_reduces_realized_pnl() {
+        let bars = make_bars(20);
+        let trade = simulate_ticker(&bars, 3, &cfg(), None)
+            .unwrap()
+            .trade
+            .unwrap();
+        let mut no_commission = Portfolio::new(100_000.0, 1).unwrap();
+        no_commission.assign("AAA", 1, bars.rows[3].date);
+        no_commission
+            .open("AAA", trade.entry_date, trade.entry_price, 0.0, true)
+            .unwrap();
+        let clean = no_commission
+            .close(
+                "AAA",
+                trade.exit_date,
+                trade.exit_price,
+                trade.exit_reason,
+                0.0,
+            )
+            .unwrap();
+
+        let mut commissioned = Portfolio::new(100_000.0, 1).unwrap();
+        commissioned.assign("AAA", 1, bars.rows[3].date);
+        commissioned
+            .open("AAA", trade.entry_date, trade.entry_price, 50.0, true)
+            .unwrap();
+        let costly = commissioned
+            .close(
+                "AAA",
+                trade.exit_date,
+                trade.exit_price,
+                trade.exit_reason,
+                50.0,
+            )
+            .unwrap();
+        assert!(costly.pnl < clean.pnl);
+    }
+
+    #[test]
     fn historical_backtest_selects_and_trades() {
         let aaa = make_bars(12);
         let spy = make_bars(12);
@@ -1352,5 +1520,293 @@ mod tests {
         let result = run_backtest(cfg(), &fetcher).unwrap();
         assert_eq!(result.selection[0].ticker, "AAA");
         assert_eq!(result.trades[0].ticker, "AAA");
+    }
+
+    #[test]
+    fn rolling_backtest_generates_signal_after_window_start() {
+        let mut aaa = make_flat_bars(30, 100.0);
+        aaa.rows[10].close = 250.0;
+        let spy = make_flat_bars(30, 400.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([("AAA".to_string(), aaa.clone()), ("SPY".to_string(), spy)]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = aaa.rows[20].date;
+        cfg.hold = 20;
+        cfg.entry_expr = "close > 200".to_string();
+        let result =
+            run_rolling_backtest(cfg, &fetcher, aaa.rows[0].date, aaa.rows[20].date).unwrap();
+        assert_eq!(result.trades.len(), 1);
+        assert_eq!(result.trades[0].signal_date, aaa.rows[10].date);
+        assert_eq!(result.trades[0].entry_date, aaa.rows[11].date);
+    }
+
+    #[test]
+    fn reserve_reallocation_fills_freed_slot() {
+        let mut active = make_flat_bars(60, 100.0);
+        let mut reserve = make_flat_bars(60, 100.0);
+        let spy = make_flat_bars(60, 400.0);
+        active.rows[39].close = 150.0;
+        set_bar(&mut active, 40, 100.0, 101.0, 99.0, 100.0);
+        set_bar(&mut active, 41, 99.0, 99.5, 90.0, 91.0);
+        reserve.rows[39].close = 120.0;
+        reserve.rows[41].close = 120.0;
+        for row in &mut active.rows {
+            row.volume = 1_000_000.0;
+        }
+        for row in &mut reserve.rows {
+            row.volume = 100_000.0;
+        }
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("ACTIVE".to_string(), active.clone()),
+                ("RESERVE".to_string(), reserve.clone()),
+                ("SPY".to_string(), spy),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = active.rows[39].date;
+        cfg.hold = 10;
+        cfg.top = 1;
+        cfg.tickers = Some(vec!["ACTIVE".to_string(), "RESERVE".to_string()]);
+        cfg.entry_expr = "close > sma(close, 3)".to_string();
+        cfg.stop_loss = Some(0.05);
+        cfg.reserve_multiple = 3;
+        cfg.reinvest = true;
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        let active_trade = result
+            .trades
+            .iter()
+            .find(|trade| trade.ticker == "ACTIVE")
+            .unwrap();
+        let reserve_trade = result
+            .trades
+            .iter()
+            .find(|trade| trade.ticker == "RESERVE")
+            .unwrap();
+        assert_eq!(active_trade.exit_reason, ExitReason::Stop);
+        assert!(reserve_trade.entry_date > active_trade.exit_date);
+    }
+
+    #[test]
+    fn portfolio_equity_curve_keeps_cash_static_after_exit() {
+        let mut bars_a = make_bars(20);
+        let mut bars_b = make_bars(20);
+        bars_a.rows[4].open = 100.0;
+        bars_a.rows[6].close = 110.0;
+        bars_b.rows[4].open = 50.0;
+        let trade_a = simulate_ticker(
+            &bars_a,
+            3,
+            &{
+                let mut c = cfg();
+                c.hold = 2;
+                c
+            },
+            None,
+        )
+        .unwrap()
+        .trade
+        .unwrap();
+        let trade_b = simulate_ticker(
+            &bars_b,
+            3,
+            &{
+                let mut c = cfg();
+                c.hold = 15;
+                c
+            },
+            None,
+        )
+        .unwrap()
+        .trade
+        .unwrap();
+        let mut p_a = Portfolio::new(100_000.0, 2).unwrap();
+        p_a.assign("AAA", 1, bars_a.rows[3].date);
+        p_a.open("AAA", trade_a.entry_date, trade_a.entry_price, 0.0, true)
+            .unwrap();
+        let trade_a = p_a
+            .close(
+                "AAA",
+                trade_a.exit_date,
+                trade_a.exit_price,
+                trade_a.exit_reason,
+                0.0,
+            )
+            .unwrap();
+        let mut p_b = Portfolio::new(100_000.0, 2).unwrap();
+        p_b.assign("BBB", 2, bars_b.rows[3].date);
+        p_b.open("BBB", trade_b.entry_date, trade_b.entry_price, 0.0, true)
+            .unwrap();
+        let trade_b = p_b
+            .close(
+                "BBB",
+                trade_b.exit_date,
+                trade_b.exit_price,
+                trade_b.exit_reason,
+                0.0,
+            )
+            .unwrap();
+        let panel = BTreeMap::from([
+            ("AAA".to_string(), bars_a.clone()),
+            ("BBB".to_string(), bars_b.clone()),
+        ]);
+        let calendar = bars_a.dates();
+        let equity = build_equity_curve(
+            &calendar,
+            &[trade_a.clone(), trade_b.clone()],
+            &panel,
+            100_000.0,
+        );
+        let after_a = equity
+            .iter()
+            .find(|(day, _)| *day > trade_a.exit_date && *day <= trade_b.exit_date)
+            .unwrap();
+        let b_close = bars_b
+            .rows
+            .iter()
+            .find(|bar| bar.date == after_a.0)
+            .unwrap()
+            .close;
+        let expected_cash =
+            100_000.0 - trade_a.entry_cost - trade_b.entry_cost + trade_a.exit_value;
+        assert_relative_eq!(after_a.1, expected_cash + trade_b.shares * b_close);
+    }
+
+    #[test]
+    fn allow_reentry_false_preserves_single_historical_trade() {
+        let mut bars = make_flat_bars(30, 100.0);
+        set_bar(&mut bars, 5, 100.0, 100.5, 80.0, 85.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA".to_string(), bars.clone()),
+                ("SPY".to_string(), bars.clone()),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = bars.rows[3].date;
+        cfg.hold = 20;
+        cfg.entry_expr = "close > 0".to_string();
+        cfg.stop_loss = Some(0.05);
+        cfg.allow_reentry = false;
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        assert_eq!(
+            result.trades.iter().filter(|t| t.ticker == "AAA").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn reentry_after_stop_fires_again_and_respects_cap() {
+        let mut bars = make_flat_bars(40, 100.0);
+        for idx in [5, 8, 11, 14, 17] {
+            bars.rows[idx].low = 70.0;
+            bars.rows[idx].close = 72.0;
+        }
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA".to_string(), bars.clone()),
+                ("SPY".to_string(), bars.clone()),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = bars.rows[3].date;
+        cfg.hold = 3;
+        cfg.entry_expr = "close > 0".to_string();
+        cfg.stop_loss = Some(0.05);
+        cfg.allow_reentry = true;
+        cfg.max_reentries = 1;
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        let aaa = result
+            .trades
+            .iter()
+            .filter(|t| t.ticker == "AAA")
+            .collect::<Vec<_>>();
+        assert_eq!(aaa.len(), 2);
+        assert_eq!(aaa[0].exit_reason, ExitReason::Stop);
+        assert!(aaa[1].entry_date > aaa[0].exit_date);
+    }
+
+    #[test]
+    fn partial_exit_closes_half_at_tier_and_runner_time_exits() {
+        let mut bars = make_flat_bars(20, 100.0);
+        set_bar(&mut bars, 4, 100.0, 101.0, 99.5, 100.0);
+        set_bar(&mut bars, 5, 100.5, 106.0, 100.0, 104.0);
+        for idx in 6..20 {
+            set_bar(&mut bars, idx, 103.0, 103.5, 102.0, 103.0);
+        }
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA".to_string(), bars.clone()),
+                ("SPY".to_string(), bars.clone()),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = bars.rows[3].date;
+        cfg.hold = 5;
+        cfg.entry_expr = "close > 0".to_string();
+        cfg.partial_exits = vec![(0.05, 0.5)];
+        let result = run_backtest(cfg, &fetcher).unwrap();
+        let aaa = result
+            .trades
+            .iter()
+            .filter(|t| t.ticker == "AAA")
+            .collect::<Vec<_>>();
+        assert_eq!(aaa.len(), 2);
+        assert_eq!(aaa[0].exit_reason, ExitReason::Target);
+        assert_relative_eq!(aaa[0].exit_price, 105.0);
+        assert_relative_eq!(aaa[0].entry_cost, aaa[1].entry_cost);
+    }
+
+    #[test]
+    fn split_only_price_adjustment_credits_dividends() {
+        let mut bars = make_flat_bars(20, 100.0);
+        bars.rows[6].dividend = Some(1.0);
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA".to_string(), bars.clone()),
+                ("SPY".to_string(), bars.clone()),
+            ]),
+        };
+        let mut full_cfg = cfg();
+        full_cfg.as_of = bars.rows[3].date;
+        full_cfg.entry_expr = "close > 0".to_string();
+        full_cfg.price_adjustment = PriceAdjustment::Full;
+        let full = run_backtest(full_cfg, &fetcher).unwrap();
+        assert!(full.trades.iter().all(|trade| trade.dividend_income == 0.0));
+
+        let mut split_cfg = cfg();
+        split_cfg.as_of = bars.rows[3].date;
+        split_cfg.entry_expr = "close > 0".to_string();
+        split_cfg.price_adjustment = PriceAdjustment::SplitsOnly;
+        let split = run_backtest(split_cfg, &fetcher).unwrap();
+        assert!(split.trades.iter().any(|trade| trade.dividend_income > 0.0));
+    }
+
+    #[test]
+    fn rolling_backtest_enforces_reentry_cap() {
+        let mut bars = make_flat_bars(30, 100.0);
+        for idx in [5, 8, 11, 14] {
+            bars.rows[idx].low = 70.0;
+        }
+        let fetcher = StubPriceFetcher {
+            panel: BTreeMap::from([
+                ("AAA".to_string(), bars.clone()),
+                ("SPY".to_string(), bars.clone()),
+            ]),
+        };
+        let mut cfg = cfg();
+        cfg.as_of = bars.rows[20].date;
+        cfg.hold = 3;
+        cfg.entry_expr = "close > 0".to_string();
+        cfg.stop_loss = Some(0.05);
+        cfg.allow_reentry = true;
+        cfg.max_reentries = 1;
+        let result =
+            run_rolling_backtest(cfg, &fetcher, bars.rows[0].date, bars.rows[20].date).unwrap();
+        assert_eq!(
+            result.trades.iter().filter(|t| t.ticker == "AAA").count(),
+            2
+        );
     }
 }
