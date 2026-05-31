@@ -124,6 +124,7 @@ def tv_to_yf(symbol: str, market: str) -> str:
       'NASDAQ:AAPL' + us    → 'AAPL'
       'AAPL'        + us    → 'AAPL'
       'RELIANCE'    + india → 'RELIANCE.NS'
+      'BRK.B'       + us    → 'BRK-B'
     """
     sym = symbol.strip().upper()
     if ":" in sym:
@@ -132,10 +133,10 @@ def tv_to_yf(symbol: str, market: str) -> str:
             return f"{rest}.NS"
         if exch == "BSE":
             return f"{rest}.BO"
-        return rest
-    if market == "india" and "." not in sym:
-        return f"{sym}.NS"
-    return sym
+        sym = rest
+    if market == "india":
+        return sym if "." in sym else f"{sym}.NS"
+    return sym.replace(".", "-")
 
 
 def _cache_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
