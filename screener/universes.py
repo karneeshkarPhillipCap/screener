@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from datetime import date
+import hashlib
+import json
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, field_validator
 import requests
 
+from screener.providers.fmp import FmpClient
+from screener.providers.fmp_screener import SUPPORTED_PARAMS, screen_symbols
 from screener.resilience import call_with_resilience
 
 
@@ -18,7 +22,7 @@ UniverseName = Literal["sp500", "nifty50"]
 
 
 class Universe(BaseModel):
-    name: UniverseName
+    name: str
     symbols: tuple[str, ...]
     source: str
     cached_path: Path
@@ -42,13 +46,11 @@ class Universe(BaseModel):
         return normalized
 
 
-def _cache_path(name: UniverseName, as_of: date) -> Path:
+def _cache_path(name: str, as_of: date) -> Path:
     return CACHE_DIR / f"{name}_{as_of.isoformat()}.txt"
 
 
-def _write_cache(
-    name: UniverseName, as_of: date, symbols: list[str], source: str
-) -> Path:
+def _write_cache(name: str, as_of: date, symbols: list[str], source: str) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = _cache_path(name, as_of)
     lines = [
@@ -61,7 +63,7 @@ def _write_cache(
     return path
 
 
-def _read_cache(name: UniverseName, as_of: date) -> Universe | None:
+def _read_cache(name: str, as_of: date) -> Universe | None:
     path = _cache_path(name, as_of)
     if not path.exists():
         return None
@@ -101,6 +103,71 @@ def load_current_universe(
         raise ValueError(f"unknown universe: {name}")
     path = _write_cache(name, as_of, symbols, source)
     return Universe(name=name, symbols=tuple(symbols), source=source, cached_path=path)
+
+
+def build_fmp_universe(
+    *,
+    filters: Mapping[str, object],
+    base: UniverseName | None = None,
+    market: str = "us",
+    as_of: date | None = None,
+    use_cache: bool = True,
+    client: FmpClient | None = None,
+    limit: int | None = None,
+    refresh: bool = False,
+) -> Universe:
+    """Build a dynamic universe from FMP's company-screener endpoint."""
+    as_of = as_of or date.today()
+    name = _fmp_cache_name(filters, base=base, market=market, limit=limit)
+    if use_cache:
+        cached = _read_cache(name, as_of)
+        if cached is not None:
+            return cached
+    rows = screen_symbols(
+        filters, client=client, limit=limit, refresh=refresh or not use_cache
+    )
+    symbols = _dedupe([_normalize_fmp_symbol(row.symbol, market) for row in rows])
+    source = "fmp:company-screener"
+    if base is not None:
+        base_universe = load_current_universe(base, as_of=as_of, use_cache=use_cache)
+        base_symbols = set(base_universe.symbols)
+        symbols = [symbol for symbol in symbols if symbol in base_symbols]
+        source = f"{source}; base={base}"
+    if not symbols:
+        raise RuntimeError("FMP universe resolved to no symbols")
+    path = _write_cache(name, as_of, symbols, source)
+    return Universe(name=name, symbols=tuple(symbols), source=source, cached_path=path)
+
+
+def _fmp_cache_name(
+    filters: Mapping[str, object],
+    *,
+    base: UniverseName | None,
+    market: str,
+    limit: int | None,
+) -> str:
+    supported_filters = {
+        key: value
+        for key, value in sorted(filters.items())
+        if key in SUPPORTED_PARAMS and value is not None
+    }
+    if limit is not None:
+        supported_filters["limit"] = int(limit)
+    payload = {
+        "base": base,
+        "filters": supported_filters,
+        "market": market,
+    }
+    raw = json.dumps(payload, default=str, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return f"fmp_{digest}"
+
+
+def _normalize_fmp_symbol(symbol: str, market: str) -> str:
+    normalized = symbol.strip().upper()
+    if market == "us":
+        normalized = normalized.replace(".", "-")
+    return normalized
 
 
 def _fetch_sp500() -> tuple[list[str], str]:
