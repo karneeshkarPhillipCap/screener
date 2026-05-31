@@ -1,5 +1,6 @@
 use uv 
-the bot code is in /home/karneeshkar/Desktop/personal/screener_bot
+
+the bot code is in /home/karneeshkar/Desktop/personal/screener_main/screener_bot/
 
 ## Cursor Cloud specific instructions
 
