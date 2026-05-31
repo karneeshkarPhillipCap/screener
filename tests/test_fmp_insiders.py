@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import json
-import urllib.parse
-
 import pandas as pd
 
 from screener import cache
-from screener import insiders as insiders_module
 from screener.insiders import (
     _aggregate_fmp_transactions,
     _fetch_fmp_insider_one,
     _row_value,
     filter_promoter_increased,
 )
+from screener.providers.fmp import FmpClient
 
 
 def _txn(
@@ -132,18 +129,29 @@ def test_aggregate_skips_non_numeric_shares_and_uses_filing_date():
     }
 
 
-class _Resp:
-    def __init__(self, payload):
+class _FmpResponse:
+    status_code = 200
+    text = ""
+    headers: dict[str, str] = {}
+
+    def __init__(self, payload: object) -> None:
         self.payload = payload
 
-    def __enter__(self):
-        return self
+    def json(self) -> object:
+        return self.payload
 
-    def __exit__(self, exc_type, exc, tb):
-        return False
 
-    def read(self):
-        return json.dumps(self.payload).encode()
+class _FmpPageSession:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def get(self, url: str, *, params=None, timeout=None):
+        page = int((params or {}).get("page", 0))
+        self.calls.append(page)
+        return _FmpResponse(self.payload_for(page))
+
+    def payload_for(self, page: int) -> list[dict]:
+        return []
 
 
 def _fmp_row(days_ago: int, shares: float = 10.0) -> dict:
@@ -159,17 +167,15 @@ def _fmp_row(days_ago: int, shares: float = 10.0) -> dict:
 def test_fetch_fmp_warns_when_page_cap_may_truncate(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
 
-    def fake_urlopen(req, timeout=20):
-        page = int(
-            urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)["page"][0]
-        )
-        return _Resp([_fmp_row(page), _fmp_row(page + 1)])
+    class PageSession(_FmpPageSession):
+        def payload_for(self, page: int) -> list[dict]:
+            return [_fmp_row(page), _fmp_row(page + 1)]
 
-    monkeypatch.setattr(insiders_module.urllib.request, "urlopen", fake_urlopen)
+    client = FmpClient(api_key="key", session=PageSession())
 
     with caplog.at_level("WARNING", logger="screener.insiders"):
         out = _fetch_fmp_insider_one(
-            "AAA", "AAA", api_key="key", cache_ttl=None, refresh=True
+            "AAA", "AAA", api_key="key", cache_ttl=None, refresh=True, client=client
         )
 
     assert out is not None
@@ -178,26 +184,23 @@ def test_fetch_fmp_warns_when_page_cap_may_truncate(monkeypatch, tmp_path, caplo
 
 def test_fetch_fmp_stops_after_out_of_window_page(monkeypatch, tmp_path):
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-    calls: list[int] = []
 
-    def fake_urlopen(req, timeout=20):
-        page = int(
-            urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)["page"][0]
-        )
-        calls.append(page)
-        if page == 0:
-            return _Resp([_fmp_row(1), _fmp_row(2)])
-        if page == 1:
-            return _Resp([_fmp_row(3), _fmp_row(400)])
-        return _Resp([_fmp_row(4)])
+    class PageSession(_FmpPageSession):
+        def payload_for(self, page: int) -> list[dict]:
+            if page == 0:
+                return [_fmp_row(1), _fmp_row(2)]
+            if page == 1:
+                return [_fmp_row(3), _fmp_row(400)]
+            return [_fmp_row(4)]
 
-    monkeypatch.setattr(insiders_module.urllib.request, "urlopen", fake_urlopen)
+    session = PageSession()
+    client = FmpClient(api_key="key", session=session)
     out = _fetch_fmp_insider_one(
-        "AAA", "AAA", api_key="key", cache_ttl=None, refresh=True
+        "AAA", "AAA", api_key="key", cache_ttl=None, refresh=True, client=client
     )
 
     assert out is not None
-    assert calls == [0, 1]
+    assert session.calls == [0, 1]
 
 
 def test_us_filter_prefers_fmp_and_falls_back_to_yfinance():

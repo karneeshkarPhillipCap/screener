@@ -19,10 +19,7 @@ For US the yfinance feed is the only signal.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -31,6 +28,7 @@ import pandas as pd
 import yfinance as yf
 
 from screener.cache import cached_json_call
+from screener.providers.fmp import FmpClient
 from screener.resilience import call_with_resilience
 
 
@@ -39,7 +37,6 @@ _INDIA_SUFFIXES = (".NS", ".BO")
 _SCREENER_URL = "https://www.screener.in/company/{symbol}/"
 _SCREENER_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; screener-cli/1.0)"}
 
-_FMP_INSIDER_URL = "https://financialmodelingprep.com/api/v4/insider-trading"
 # FMP only exposes Form 3/4/5 (SEC) data, which covers US listings. Indian
 # tickers stay on the screener.in promoter feed.
 _FMP_WINDOW_DAYS = 182
@@ -152,16 +149,8 @@ def fetch_yfinance_insiders(
 
 
 def _fmp_api_key() -> Optional[str]:
-    """Resolve FMP_API_KEY, loading the project .env once like the backtester."""
-    key = os.environ.get("FMP_API_KEY")
-    if key:
-        return key
-    try:
-        from screener.backtester.data import load_env_file
-    except Exception:
-        return None
-    load_env_file()
-    return os.environ.get("FMP_API_KEY")
+    """Resolve FMP_API_KEY, loading the project .env once."""
+    return FmpClient.resolve_api_key()
 
 
 def _aggregate_fmp_transactions(
@@ -226,19 +215,20 @@ def _fetch_fmp_insider_one(
     api_key: str,
     cache_ttl: float | None,
     refresh: bool,
+    client: FmpClient | None = None,
 ) -> Optional[dict]:
     def _fetch() -> Optional[dict]:
         cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=_FMP_WINDOW_DAYS)
 
+        fmp = client or FmpClient(api_key=api_key)
+
         def _request_page(page: int) -> Optional[list]:
-            query = urllib.parse.urlencode(
-                {"symbol": symbol, "page": page, "apikey": api_key}
+            payload = fmp.get_legacy_json(
+                "v4/insider-trading",
+                params={"symbol": symbol, "page": page},
+                timeout=20,
+                fallback=None,
             )
-            req = urllib.request.Request(
-                f"{_FMP_INSIDER_URL}?{query}", headers=_SCREENER_HEADERS
-            )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                payload = json.loads(resp.read().decode("utf-8", "ignore"))
             return payload if isinstance(payload, list) else None
 
         def _request() -> Optional[list]:
@@ -313,6 +303,7 @@ def fetch_fmp_insiders(
     api_key = _fmp_api_key()
     if not api_key:
         return pd.DataFrame()
+    client = FmpClient(api_key=api_key)
 
     jobs = [
         (str(row["name"]), _tv_to_yf(str(row["ticker"]), market))
@@ -328,6 +319,7 @@ def fetch_fmp_insiders(
                 api_key=api_key,
                 cache_ttl=cache_ttl,
                 refresh=refresh,
+                client=client,
             )
             for n, s in jobs
         ]

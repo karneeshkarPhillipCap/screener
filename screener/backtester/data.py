@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Iterable, Optional, Protocol
 
 import pandas as pd
-import requests
 
+from screener.providers.fmp import FmpClient, FmpSession
 from screener.resilience import call_with_resilience
 
 
@@ -462,15 +462,13 @@ class FMPPriceFetcher:
         cache_dir: Optional[Path] = None,
         auto_adjust: bool = True,
         refresh: bool = False,
-        session: requests.Session | None = None,
+        session: FmpSession | None = None,
     ) -> None:
-        self.api_key = api_key or os.environ.get("FMP_API_KEY")
-        if not self.api_key:
-            raise ValueError("FMP_API_KEY is required to use the FMP price fetcher")
+        self.client = FmpClient(api_key=api_key, session=session)
+        self.api_key = self.client.api_key
         self.cache_dir = cache_dir or FMP_CACHE_DIR
         self.auto_adjust = bool(auto_adjust)
         self.refresh = bool(refresh)
-        self.session = session or requests.Session()
 
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
@@ -492,23 +490,13 @@ class FMPPriceFetcher:
                 ]
                 continue
 
-            def request_payload() -> object:
-                response = self.session.get(
-                    f"{self.base_url}/{ticker}",
-                    params={
-                        "from": start_ts.date().isoformat(),
-                        "to": end_ts.date().isoformat(),
-                        "apikey": self.api_key,
-                    },
-                    timeout=30,
-                )
-                response.raise_for_status()
-                return response.json()
-
-            payload = call_with_resilience(
-                "fmp",
-                f"historical prices {ticker}",
-                request_payload,
+            payload = self.client.get_legacy_json(
+                f"v3/historical-price-full/{ticker}",
+                params={
+                    "from": start_ts.date().isoformat(),
+                    "to": end_ts.date().isoformat(),
+                },
+                timeout=30,
                 fallback={},
             )
             norm = _normalize_fmp_historical(payload, self.auto_adjust)
