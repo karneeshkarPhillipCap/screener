@@ -8,56 +8,27 @@ The F&O ban-list is fetched from NSE archives via a primed requests session
 from __future__ import annotations
 
 from datetime import date
-from functools import lru_cache
 from typing import Optional
 
 import pandas as pd
-import requests
 
-from screener.resilience import call_with_resilience
+from screener.unusual_volume.nse_client import fetch_nse_text
 
 
 FNO_BAN_URL = "https://nsearchives.nseindia.com/content/fo/fo_secban.csv"
-NSE_HOME_URL = "https://www.nseindia.com/"
-
-
-@lru_cache(maxsize=1)
-def _ban_session() -> requests.Session:
-    sess = requests.Session()
-    sess.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/csv,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-    )
-    call_with_resilience(
-        "nse",
-        "prime ban-list session",
-        lambda: sess.get(NSE_HOME_URL, timeout=8),
-        fallback=None,
-    )
-    return sess
 
 
 def fetch_fno_ban_list(timeout: float = 8.0) -> set[str]:
     """Return the symbols currently in the NSE F&O ban list.
 
-    Returns an empty set on any failure — callers should treat the filter as
-    a soft guard, not a load-bearing check.
+    Fetched through the shared primed/repriming NSE session. Returns an empty
+    set on any failure — callers should treat the filter as a soft guard, not
+    a load-bearing check.
     """
-    resp = call_with_resilience(
-        "nse",
-        "fno ban list",
-        lambda: _ban_session().get(FNO_BAN_URL, timeout=timeout),
-        fallback=None,
-    )
-    if resp is None or resp.status_code != 200:
+    text = fetch_nse_text(FNO_BAN_URL, "fno ban list", timeout=timeout)
+    if text is None:
         return set()
-    return _parse_ban_csv(resp.text)
+    return _parse_ban_csv(text)
 
 
 def _parse_ban_csv(text: str) -> set[str]:
@@ -96,8 +67,12 @@ def passes_volume_floor(bars: pd.DataFrame, min_avg_volume: float, as_of: date) 
     df = df[df.index <= as_of_ts]
     if len(df) < 21:
         return False
-    avg20 = float(df["volume"].rolling(20, min_periods=20).mean().shift(1).iloc[-1])
-    return avg20 >= min_avg_volume
+    avg20 = df["volume"].rolling(20, min_periods=20).mean().shift(1).iloc[-1]
+    if pd.isna(avg20):
+        # NaN volume inside the window leaves the rolling mean undefined;
+        # treat the ticker as ineligible instead of comparing against NaN.
+        return False
+    return float(avg20) >= min_avg_volume
 
 
 def passes_market_cap(market_cap: Optional[float], min_market_cap: float) -> bool:

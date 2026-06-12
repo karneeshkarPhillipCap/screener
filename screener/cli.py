@@ -15,11 +15,17 @@ from screener.backtester.lab import backtest_lab
 from screener.backtester.optimization.cli import optimize
 from screener.backtester.rolling import backtest_rolling
 from screener.backtester.vbt_sweep import vbt_sweep
+from screener.commands.cache import cache_group
+from screener.commands.conviction import conviction
 from screener.commands.garp import garp
+from screener.commands.index_inclusion import index_inclusion
 from screener.commands.insiders import promoter_buys
+from screener.commands.institutional import institutional
 from screener.commands.rs_breakout import rs_breakout
 from screener.commands.screen import screen
+from screener.commands.seasonality import seasonality
 from screener.config import load_config
+from screener.earnings_backtest.cli import earnings_backtest, earnings_pead
 from screener.logging_config import configure_logging
 from screener.operator.cli import register as _register_operator_cli
 from screener import usage
@@ -70,14 +76,21 @@ def cli(
 cli.add_command(screen)
 cli.add_command(rs_breakout)
 cli.add_command(garp)
+cli.add_command(conviction)
 cli.add_command(promoter_buys)
+cli.add_command(institutional)
+cli.add_command(index_inclusion)
+cli.add_command(seasonality)
 cli.add_command(unusual_volume)
+cli.add_command(earnings_backtest)
+cli.add_command(earnings_pead)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
 cli.add_command(vbt_sweep)
 cli.add_command(backtest_lab)
 _register_operator_cli(cli)
 cli.add_command(optimize)
+cli.add_command(cache_group)
 
 
 def _wrap_usage_tracking(command: click.Command, feature_path: tuple[str, ...]) -> None:

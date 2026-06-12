@@ -2,6 +2,8 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
+from screener.format import fmt_mcap, fmt_pct
+
 console = Console()
 
 COLUMN_LABELS = {
@@ -71,7 +73,7 @@ def _format_value(col: str, val) -> str:
         return "-"
 
     if col == "change":
-        return f"{val:+.2f}%"
+        return fmt_pct(val)
     if col == "volume":
         if val >= 1_000_000:
             return f"{val / 1_000_000:.1f}M"
@@ -79,13 +81,7 @@ def _format_value(col: str, val) -> str:
             return f"{val / 1_000:.1f}K"
         return f"{val:,.0f}"
     if col == "market_cap_basic":
-        if val >= 1e12:
-            return f"{val / 1e12:.2f}T"
-        if val >= 1e9:
-            return f"{val / 1e9:.2f}B"
-        if val >= 1e6:
-            return f"{val / 1e6:.1f}M"
-        return f"{val:,.0f}"
+        return fmt_mcap(val)
     if col in ("close", "EMA5", "EMA20", "EMA100", "EMA200"):
         return f"{val:.2f}"
     if col in (
@@ -109,13 +105,7 @@ def _format_value(col: str, val) -> str:
     ):
         return f"{val:.2f}"
     if col == "sales":
-        if val >= 1e12:
-            return f"{val / 1e12:.2f}T"
-        if val >= 1e9:
-            return f"{val / 1e9:.2f}B"
-        if val >= 1e6:
-            return f"{val / 1e6:.1f}M"
-        return f"{val:,.0f}"
+        return fmt_mcap(val)
 
     return str(val)
 
@@ -336,4 +326,60 @@ def print_insider_results(
     for _, row in df.iterrows():
         cells = [_format_insider(c, row[c]) for c in columns]
         table.add_row(*cells)
+    console.print(table)
+
+
+_INSTITUTIONAL_COLUMNS = [
+    "symbol",
+    "holders",
+    "total_shares",
+    "qoq_change_shares",
+    "qoq_change_pct",
+]
+
+_INSTITUTIONAL_LABELS = {
+    "symbol": "Symbol",
+    "holders": "Holders",
+    "total_shares": "Inst. Shares",
+    "qoq_change_shares": "QoQ Chg",
+    "qoq_change_pct": "QoQ Chg%",
+}
+
+
+def _format_institutional(col: str, val) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "-"
+    if col == "holders":
+        return f"{int(val):,}"
+    if col == "qoq_change_pct":
+        return f"{float(val):+.2f}%"
+    if col in {"total_shares", "qoq_change_shares"}:
+        v = float(val)
+        sign = "+" if col == "qoq_change_shares" and v >= 0 else ""
+        if abs(v) >= 1_000_000_000:
+            return f"{sign}{v / 1_000_000_000:.2f}B"
+        if abs(v) >= 1_000_000:
+            return f"{sign}{v / 1_000_000:.2f}M"
+        if abs(v) >= 1_000:
+            return f"{sign}{v / 1_000:.1f}K"
+        return f"{sign}{v:,.0f}"
+    return str(val)
+
+
+def print_institutional_results(df: pd.DataFrame) -> None:
+    console.print(
+        f"\n[bold]Institutional ownership (US)[/bold] — {len(df)} tickers, "
+        "ranked by QoQ share change\n"
+    )
+    columns = [c for c in _INSTITUTIONAL_COLUMNS if c in df.columns]
+    table = Table(show_header=True, header_style="bold", show_lines=False)
+    for col_name in columns:
+        justify = "left" if col_name == "symbol" else "right"
+        table.add_column(
+            _INSTITUTIONAL_LABELS.get(col_name, col_name),
+            justify=justify,
+            no_wrap=True,
+        )
+    for _, row in df.iterrows():
+        table.add_row(*[_format_institutional(c, row[c]) for c in columns])
     console.print(table)

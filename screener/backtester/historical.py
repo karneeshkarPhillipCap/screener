@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import date, datetime
+from pathlib import Path
 
 import click
 import numpy as np
@@ -25,7 +27,7 @@ from screener.backtester.core import (
 )
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
 from screener.backtester.display import print_backtest, print_ledger_csv
-from screener.backtester.metrics import compute_metrics
+from screener.backtester.metrics import compute_metrics, compute_regime_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import PineError, evaluate, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
@@ -117,13 +119,10 @@ def _run_event_driven_sim(
     warnings: list[str],
 ) -> None:
     """Chronological event-driven simulator with optional reserve rotation."""
-    from screener.backtester.core import (
-        _apply_slip,
-        _check_exit_at_bar,
-        _fire_partial_exits_at_bar,
-        _maybe_credit_dividends,
-    )
+    from screener.backtester.day_loop import DayLoop
+    from screener.backtester.fills import FillModel
 
+    fill_model = FillModel(cfg)
     slot_states: dict[int, _SlotState | None] = {}
     slot_bars: dict[int, pd.DataFrame] = {}
     reentries_left: dict[int, int] = {}
@@ -144,7 +143,7 @@ def _run_event_driven_sim(
             continue
         signal_idx = int(np.where(mask)[0][-1])
         state, warn = _make_slot_state(
-            ticker, bars, signal_idx, cfg, exit_ast, int(row["rank"])
+            ticker, bars, signal_idx, cfg, exit_ast, int(row["rank"]), fill_model
         )
         if state is None:
             if warn:
@@ -163,7 +162,7 @@ def _run_event_driven_sim(
         reentries_left[slot_id] = cfg.max_reentries if cfg.allow_reentry else 0
 
     taken = {state.ticker for state in slot_states.values() if state is not None}
-    reserve_queue: list[dict] = reserves_df.to_dict("records")
+    reserve_queue: deque[dict] = deque(reserves_df.to_dict("records"))
 
     horizon_end = as_of_ts + pd.Timedelta(days=max(cfg.hold * 3 + 60, 90))
     day_set: set[pd.Timestamp] = set()
@@ -174,6 +173,14 @@ def _run_event_driven_sim(
             if as_of_ts < current_day <= horizon_end:
                 day_set.add(current_day)
     master_dates = sorted(day_set)
+
+    day_loop = DayLoop(
+        portfolio=portfolio,
+        cfg=cfg,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        fill_model=fill_model,
+    )
 
     for day in master_dates:
         if pending_reentry:
@@ -189,7 +196,13 @@ def _run_event_driven_sim(
                     continue
                 new_rank = portfolio._ranks.get(ticker, 0)
                 state, warn = _make_slot_state(
-                    ticker, slot_frame, reentry_signal_idx, cfg, exit_ast, new_rank
+                    ticker,
+                    slot_frame,
+                    reentry_signal_idx,
+                    cfg,
+                    exit_ast,
+                    new_rank,
+                    fill_model,
                 )
                 if state is None:
                     if warn:
@@ -206,45 +219,14 @@ def _run_event_driven_sim(
                 slot_states[slot_id] = state
                 del pending_reentry[slot_id]
 
+        freed_slots = day_loop.process_exits_for_day(day)
         freed: list[int] = []
-        for slot_id, state in list(slot_states.items()):
-            if state is None:
-                continue
-            bars = slot_bars[slot_id]
-            if day not in bars.index:
-                continue
-            i = bars.index.get_loc(day)
-            if (
-                isinstance(i, slice)
-                or not isinstance(i, int)
-                or i < state.entry_idx + 1
-            ):
-                continue
-            _maybe_credit_dividends(portfolio, state, bars, i, cfg)
-            _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio)
-            if portfolio.get_position(state.ticker) is None:
-                slot_states[slot_id] = None
-                freed.append(slot_id)
-                if cfg.allow_reentry and reentries_left.get(slot_id, 0) > 0:
-                    reentries_left[slot_id] -= 1
-                    pending_reentry[slot_id] = state.ticker
-                continue
-            exit_ = _check_exit_at_bar(state, bars, i, cfg)
-            if exit_ is None:
-                continue
-            fill, reason = exit_
-            portfolio.close(
-                ticker=state.ticker,
-                exit_date=day.date(),
-                exit_price=fill,
-                reason=reason,
-                commission_bps=cfg.commission_bps,
-            )
-            slot_states[slot_id] = None
+        for freed_slot in freed_slots:
+            slot_id = freed_slot.slot_id
             freed.append(slot_id)
             if cfg.allow_reentry and reentries_left.get(slot_id, 0) > 0:
                 reentries_left[slot_id] -= 1
-                pending_reentry[slot_id] = state.ticker
+                pending_reentry[slot_id] = freed_slot.state.ticker
 
         if not cfg.reinvest or not freed:
             continue
@@ -253,7 +235,7 @@ def _run_event_driven_sim(
             if slot_id in pending_reentry:
                 continue
             while reserve_queue:
-                reserve = reserve_queue.pop(0)
+                reserve = reserve_queue.popleft()
                 ticker = str(reserve["ticker"])
                 if ticker in taken:
                     continue
@@ -272,6 +254,7 @@ def _run_event_driven_sim(
                     cfg,
                     exit_ast,
                     int(reserve["rank"]),
+                    fill_model,
                 )
                 if state is None:
                     if warn:
@@ -297,10 +280,9 @@ def _run_event_driven_sim(
         if tail.empty:
             continue
         last_bar = tail.iloc[-1]
-        fill = _apply_slip(
-            float(last_bar["close"]),
-            "sell",
-            cfg,
+        fill = fill_model.exit_price(
+            reason="eod",
+            close=float(last_bar["close"]),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
         )
@@ -408,6 +390,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     benchmark = fetch_benchmark(cfg.benchmark, start, end, fetcher)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
     metrics = compute_metrics(equity, benchmark_aligned, trades, slot_count)
+    metrics.update(compute_regime_metrics(benchmark, trades))
 
     return BacktestResult(
         config=cfg,
@@ -565,6 +548,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     help="Price-adjustment regime. full=legacy (yfinance auto_adjust=True); splits_only=split-adjust OHLC and credit dividends as cash; none=raw OHLC.",
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
+@click.option(
+    "--report",
+    "report_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write a static, self-contained HTML tear-sheet to this file.",
+)
 def backtest_historical(
     market,
     as_of,
@@ -599,6 +589,7 @@ def backtest_historical(
     partial_exit_args,
     price_adjustment,
     output_csv,
+    report_path,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
@@ -658,7 +649,23 @@ def backtest_historical(
         auto_adjust=price_adjustment == "full"
     )
     result = run_backtest(cfg, fetcher)
+    if report_path:
+        from screener.backtester.tearsheet import render_tearsheet
+
+        universe_note = (
+            f"explicit universe: {len(ticker_tuple)} tickers via --tickers"
+            if ticker_tuple
+            else f"universe file: {universe_file}"
+        ) + "; survivorship bias: supplied list is not point-in-time"
+        render_tearsheet(
+            result,
+            report_path,
+            title="Historical Backtest Tear Sheet",
+            extra_notes=[universe_note],
+        )
     if output_csv:
         print_ledger_csv(result)
         return
     print_backtest(result)
+    if report_path:
+        click.echo(f"Report: {report_path}")

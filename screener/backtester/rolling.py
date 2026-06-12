@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -20,7 +21,6 @@ from screener.backtester.cli_common import (
 )
 from screener.backtester.core import (
     _active_or_pending_tickers,
-    _close_slot_at_day,
     _SlotState,
     _force_close_open_slots,
     _make_slot_state,
@@ -29,12 +29,15 @@ from screener.backtester.core import (
     _prepare_strategy_bars,
     _resolve_universe,
 )
+from screener.backtester.day_loop import DayLoop
+from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
 from screener.backtester.display import print_backtest, print_ledger_csv
-from screener.backtester.metrics import compute_metrics
+from screener.backtester.metrics import compute_metrics, compute_regime_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.regime import TREND_LABELS, classify_regimes
 from screener.universes import load_current_universe, load_sp500_membership
 
 
@@ -58,6 +61,7 @@ def _build_rolling_candidate_matrices(
     master_dates: list[pd.Timestamp],
     lookback_required: int,
     membership_added: dict[str, date] | None = None,
+    regime_allowed: pd.Series | None = None,
 ) -> _RollingCandidateMatrices:
     """Build once-per-run matrices for daily candidate scans."""
     master_ix = pd.DatetimeIndex(master_dates)
@@ -78,6 +82,14 @@ def _build_rolling_candidate_matrices(
         for tv, added in membership_added.items():
             if tv in signal_mat.columns:
                 signal_mat.loc[master_ix < pd.Timestamp(added), tv] = False
+    # Benchmark-regime gate: suppress every entry signal on days whose
+    # benchmark regime is not allowed (days missing from the benchmark
+    # calendar inherit the most recent prior regime; warmup days are blocked).
+    if regime_allowed is not None:
+        allowed = (
+            regime_allowed.reindex(master_ix, method="ffill").fillna(False).astype(bool)
+        )
+        signal_mat.loc[~allowed.to_numpy(), :] = False
     # Empty dict sentinel: no min-price / ADV filters configured.
     filter_mat: pd.DataFrame | None
     if filter_signals_by_tv:
@@ -205,6 +217,13 @@ def run_rolling_backtest(
     entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
     filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
 
+    # Fetched once (with warmup history so SMA200-based regimes are defined)
+    # and reused for the regime gate, the aligned curve, and regime metrics.
+    benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
+    regime_allowed: pd.Series | None = None
+    if cfg.regime_filter:
+        regime_allowed = classify_regimes(benchmark).isin(set(cfg.regime_filter))
+
     day_arrays: list[np.ndarray] = []
     for bars in bars_by_tv.values():
         if bars is None or bars.empty:
@@ -216,7 +235,6 @@ def run_rolling_backtest(
     if not day_arrays:
         calendar = pd.bdate_range(start_ts, end_ts)
         equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
-        benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
         benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
         metrics = compute_metrics(equity, benchmark_aligned, [], max(cfg.top, 1))
         metrics["unique_tickers"] = 0
@@ -238,6 +256,7 @@ def run_rolling_backtest(
         master_dates,
         lookback,
         membership_added=dict(cfg.membership_added) or None,
+        regime_allowed=regime_allowed,
     )
     portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
     slot_states: dict[int, _SlotState | None] = {
@@ -246,23 +265,23 @@ def run_rolling_backtest(
     slot_bars: dict[int, pd.DataFrame] = {}
     selection_rows: list[dict] = []
 
+    fill_model = FillModel(cfg)
+    day_loop = DayLoop(
+        portfolio=portfolio,
+        cfg=cfg,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        fill_model=fill_model,
+    )
+
     for day in master_dates:
-        free_slots: list[int] = []
-        for slot_id, state in list(slot_states.items()):
-            if state is None:
-                free_slots.append(slot_id)
-                continue
-            bars = slot_bars[slot_id]
-            if _close_slot_at_day(
-                slot_id=slot_id,
-                state=state,
-                bars=bars,
-                day=day,
-                cfg=cfg,
-                portfolio=portfolio,
-                slot_states=slot_states,
-            ):
-                free_slots.append(slot_id)
+        # Run the shared exit sequence, then treat every slot that is now empty
+        # (whether already idle or freed today) as available for refill. Order
+        # is slot-id ascending, matching the original interleaved loop.
+        day_loop.process_exits_for_day(day)
+        free_slots: list[int] = [
+            slot_id for slot_id, state in slot_states.items() if state is None
+        ]
 
         if not free_slots:
             continue
@@ -275,11 +294,12 @@ def run_rolling_backtest(
         warnings.extend(day_warnings)
         if not candidates:
             continue
+        candidate_queue: deque[dict] = deque(candidates)
 
         for slot_id in free_slots:
             opened = False
-            while candidates and not opened:
-                row = candidates.pop(0)
+            while candidate_queue and not opened:
+                row = candidate_queue.popleft()
                 ticker = str(row["ticker"])
                 if ticker in _active_or_pending_tickers(slot_states):
                     continue
@@ -293,6 +313,7 @@ def run_rolling_backtest(
                     cfg,
                     exit_ast,
                     int(row["rank"]),
+                    fill_model,
                 )
                 if state is None:
                     if warn:
@@ -328,6 +349,7 @@ def run_rolling_backtest(
         cfg=cfg,
         portfolio=portfolio,
         end_ts=end_ts,
+        fill_model=fill_model,
     )
     trades = portfolio.closed_trades()
 
@@ -343,10 +365,10 @@ def run_rolling_backtest(
         date_set.update(dates.tolist())
     calendar = pd.DatetimeIndex(sorted(date_set))
     equity = build_equity_curve(calendar, trades, bars_by_tv, cfg.initial_capital)
-    benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
     metrics = compute_metrics(equity, benchmark_aligned, trades, max(cfg.top, 1))
     metrics["unique_tickers"] = len({trade.ticker for trade in trades})
+    metrics.update(compute_regime_metrics(benchmark, trades))
 
     selection = pd.DataFrame(
         selection_rows,
@@ -491,7 +513,24 @@ def run_rolling_backtest(
     type=click.Choice(["full", "splits_only", "none"]),
     default="full",
 )
+@click.option(
+    "--regime-filter",
+    "regime_filter_args",
+    multiple=True,
+    type=click.Choice(list(TREND_LABELS)),
+    help=(
+        "Only allow entries on days whose benchmark trend regime matches "
+        "(repeatable). Warmup days with an unknown regime are suppressed."
+    ),
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
+@click.option(
+    "--report",
+    "report_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write a static, self-contained HTML tear-sheet to this file.",
+)
 @click.option(
     "--dashboard",
     is_flag=True,
@@ -546,7 +585,9 @@ def backtest_rolling(
     entry_limit_bps,
     partial_exit_args,
     price_adjustment,
+    regime_filter_args,
     output_csv,
+    report_path,
     dashboard,
     dashboard_port,
     dashboard_dir,
@@ -645,6 +686,7 @@ def backtest_rolling(
         entry_limit_bps=entry_limit_bps,
         partial_exits=partial_exits,
         price_adjustment=price_adjustment,
+        regime_filter=tuple(dict.fromkeys(regime_filter_args)),
     )
 
     fetcher = click.get_current_context().obj or build_price_fetcher(
@@ -653,6 +695,15 @@ def backtest_rolling(
     result = run_rolling_backtest(
         cfg, fetcher, start_date=start_date, end_date=end_date
     )
+    if report_path:
+        from screener.backtester.tearsheet import render_tearsheet
+
+        render_tearsheet(
+            result,
+            report_path,
+            title="Rolling Backtest Tear Sheet",
+            extra_notes=[universe_note] if universe_note else [],
+        )
     if output_csv:
         print_ledger_csv(result)
         return
@@ -664,6 +715,8 @@ def backtest_rolling(
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
     print_backtest(result)
+    if report_path:
+        console.print(f"[green]Report:[/green] {report_path}")
     if dashboard:
         from screener.backtester.dashboard import render_dashboard, serve_dashboard
 
