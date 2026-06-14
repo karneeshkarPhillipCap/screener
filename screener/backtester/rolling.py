@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import click
 import numpy as np
@@ -38,7 +39,11 @@ from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.regime import TREND_LABELS, classify_regimes
-from screener.universes import load_current_universe, load_sp500_membership
+from screener.universes import (
+    UniverseName,
+    load_current_universe,
+    load_sp500_membership,
+)
 
 
 @dataclass(frozen=True)
@@ -157,9 +162,11 @@ def _candidate_rows_for_day(
         rows.append(
             {
                 "ticker": ticker,
-                "signal_idx": int(matrices.bar_idx_mat.at[day, ticker]),
-                "as_of_close": float(matrices.close_mat.at[day, ticker]),
-                "as_of_volume": float(matrices.volume_mat.at[day, ticker]),
+                # .at[...] is typed as a broad pandas Scalar union; these cells
+                # are always numeric, so cast to Any before int/float coercion.
+                "signal_idx": int(cast(Any, matrices.bar_idx_mat.at[day, ticker])),
+                "as_of_close": float(cast(Any, matrices.close_mat.at[day, ticker])),
+                "as_of_volume": float(cast(Any, matrices.volume_mat.at[day, ticker])),
                 "as_of_dollar_vol": float(as_of_dollar_vol),
                 "rank": rank,
                 "role": "active",
@@ -168,20 +175,38 @@ def _candidate_rows_for_day(
     return rows, warnings
 
 
-def run_rolling_backtest(
+@dataclass(frozen=True)
+class _RollingSimulationSetup:
+    """Once-per-run setup for the rolling day loop and result assembly.
+
+    When ``early_result`` is set, no trading day had price data and the caller
+    returns it directly without running the day loop; the remaining fields are
+    unused in that case.
+    """
+
+    early_result: BacktestResult | None
+    master_dates: list[pd.Timestamp]
+    candidate_matrices: _RollingCandidateMatrices | None
+    bars_by_tv: dict[str, pd.DataFrame]
+    benchmark: pd.Series
+    exit_ast: object
+    portfolio: Portfolio | None
+    slot_states: dict[int, _SlotState | None]
+    slot_bars: dict[int, pd.DataFrame]
+    selection_rows: list[dict]
+    fill_model: FillModel | None
+    day_loop: DayLoop | None
+
+
+def _prepare_simulation(
     cfg: BacktestConfig,
     fetcher: PriceFetcher,
     *,
-    start_date: date,
-    end_date: date,
-) -> BacktestResult:
-    """Run a daily rolling simulation over ``[start_date, end_date]``."""
-    warnings: list[str] = []
-    start_ts = pd.Timestamp(start_date).normalize()
-    end_ts = pd.Timestamp(end_date).normalize()
-    if end_ts < start_ts:
-        raise ValueError("end_date must be >= start_date")
-
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    warnings: list[str],
+) -> _RollingSimulationSetup:
+    """Fetch data, precompute signals/matrices and build the slot/portfolio state."""
     entry_ast = parse(cfg.entry_expr)
     exit_ast = parse(cfg.exit_expr) if cfg.exit_expr else None
     lookback = required_lookback(entry_ast)
@@ -238,7 +263,7 @@ def run_rolling_backtest(
         benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
         metrics = compute_metrics(equity, benchmark_aligned, [], max(cfg.top, 1))
         metrics["unique_tickers"] = 0
-        return BacktestResult(
+        early_result = BacktestResult(
             config=cfg,
             trades=[],
             equity_curve=equity,
@@ -246,6 +271,20 @@ def run_rolling_backtest(
             metrics=metrics,
             warnings=warnings + ["no trading days with price data in rolling window"],
             selection=pd.DataFrame(),
+        )
+        return _RollingSimulationSetup(
+            early_result=early_result,
+            master_dates=[],
+            candidate_matrices=None,
+            bars_by_tv=bars_by_tv,
+            benchmark=benchmark,
+            exit_ast=exit_ast,
+            portfolio=None,
+            slot_states={},
+            slot_bars={},
+            selection_rows=[],
+            fill_model=None,
+            day_loop=None,
         )
 
     master_dates = list(pd.DatetimeIndex(np.unique(np.concatenate(day_arrays))))
@@ -273,84 +312,123 @@ def run_rolling_backtest(
         slot_bars=slot_bars,
         fill_model=fill_model,
     )
-
-    for day in master_dates:
-        # Run the shared exit sequence, then treat every slot that is now empty
-        # (whether already idle or freed today) as available for refill. Order
-        # is slot-id ascending, matching the original interleaved loop.
-        day_loop.process_exits_for_day(day)
-        free_slots: list[int] = [
-            slot_id for slot_id, state in slot_states.items() if state is None
-        ]
-
-        if not free_slots:
-            continue
-
-        candidates, day_warnings = _candidate_rows_for_day(
-            day,
-            candidate_matrices,
-            exclude=_active_or_pending_tickers(slot_states),
-        )
-        warnings.extend(day_warnings)
-        if not candidates:
-            continue
-        candidate_queue: deque[dict] = deque(candidates)
-
-        for slot_id in free_slots:
-            opened = False
-            while candidate_queue and not opened:
-                row = candidate_queue.popleft()
-                ticker = str(row["ticker"])
-                if ticker in _active_or_pending_tickers(slot_states):
-                    continue
-                bars = bars_by_tv.get(ticker, pd.DataFrame())
-                if bars is None or bars.empty:
-                    continue
-                state, warn = _make_slot_state(
-                    ticker,
-                    bars,
-                    int(row["signal_idx"]),
-                    cfg,
-                    exit_ast,
-                    int(row["rank"]),
-                    fill_model,
-                )
-                if state is None:
-                    if warn:
-                        warnings.append(f"{ticker}: {warn}")
-                    continue
-                if pd.Timestamp(state.entry_date) > end_ts:
-                    continue
-                portfolio.assign(ticker, int(row["rank"]), day.date())
-                portfolio.open(
-                    ticker=ticker,
-                    entry_date=state.entry_date,
-                    entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
-                )
-                slot_states[slot_id] = state
-                slot_bars[slot_id] = bars
-                selection_rows.append(
-                    {
-                        "ticker": ticker,
-                        "signal_date": day.date(),
-                        "as_of_close": row["as_of_close"],
-                        "as_of_volume": row["as_of_volume"],
-                        "as_of_dollar_vol": row["as_of_dollar_vol"],
-                        "rank": row["rank"],
-                        "role": "active",
-                    }
-                )
-                opened = True
-
-    _force_close_open_slots(
+    return _RollingSimulationSetup(
+        early_result=None,
+        master_dates=master_dates,
+        candidate_matrices=candidate_matrices,
+        bars_by_tv=bars_by_tv,
+        benchmark=benchmark,
+        exit_ast=exit_ast,
+        portfolio=portfolio,
         slot_states=slot_states,
         slot_bars=slot_bars,
-        cfg=cfg,
-        portfolio=portfolio,
-        end_ts=end_ts,
+        selection_rows=selection_rows,
         fill_model=fill_model,
+        day_loop=day_loop,
     )
+
+
+def _simulate_day(
+    day: pd.Timestamp,
+    *,
+    day_loop: DayLoop,
+    candidate_matrices: _RollingCandidateMatrices,
+    bars_by_tv: dict[str, pd.DataFrame],
+    cfg: BacktestConfig,
+    exit_ast,
+    fill_model: FillModel,
+    portfolio: Portfolio,
+    slot_states: dict[int, _SlotState | None],
+    slot_bars: dict[int, pd.DataFrame],
+    end_ts: pd.Timestamp,
+    selection_rows: list[dict],
+    warnings: list[str],
+) -> None:
+    """Advance one trading day: process exits, then refill freed slots.
+
+    Mutates ``slot_states``, ``slot_bars``, ``portfolio``, ``selection_rows`` and
+    ``warnings`` in place, matching the original interleaved loop body.
+    """
+    # Run the shared exit sequence, then treat every slot that is now empty
+    # (whether already idle or freed today) as available for refill. Order
+    # is slot-id ascending, matching the original interleaved loop.
+    day_loop.process_exits_for_day(day)
+    free_slots: list[int] = [
+        slot_id for slot_id, state in slot_states.items() if state is None
+    ]
+
+    if not free_slots:
+        return
+
+    candidates, day_warnings = _candidate_rows_for_day(
+        day,
+        candidate_matrices,
+        exclude=_active_or_pending_tickers(slot_states),
+    )
+    warnings.extend(day_warnings)
+    if not candidates:
+        return
+    candidate_queue: deque[dict] = deque(candidates)
+
+    for slot_id in free_slots:
+        opened = False
+        while candidate_queue and not opened:
+            row = candidate_queue.popleft()
+            ticker = str(row["ticker"])
+            if ticker in _active_or_pending_tickers(slot_states):
+                continue
+            bars = bars_by_tv.get(ticker, pd.DataFrame())
+            if bars is None or bars.empty:
+                continue
+            state, warn = _make_slot_state(
+                ticker,
+                bars,
+                int(row["signal_idx"]),
+                cfg,
+                exit_ast,
+                int(row["rank"]),
+                fill_model,
+            )
+            if state is None:
+                if warn:
+                    warnings.append(f"{ticker}: {warn}")
+                continue
+            if pd.Timestamp(state.entry_date) > end_ts:
+                continue
+            portfolio.assign(ticker, int(row["rank"]), day.date())
+            portfolio.open(
+                ticker=ticker,
+                entry_date=state.entry_date,
+                entry_price=state.entry_fill,
+                commission_bps=cfg.commission_bps,
+            )
+            slot_states[slot_id] = state
+            slot_bars[slot_id] = bars
+            selection_rows.append(
+                {
+                    "ticker": ticker,
+                    "signal_date": day.date(),
+                    "as_of_close": row["as_of_close"],
+                    "as_of_volume": row["as_of_volume"],
+                    "as_of_dollar_vol": row["as_of_dollar_vol"],
+                    "rank": row["rank"],
+                    "role": "active",
+                }
+            )
+            opened = True
+
+
+def _assemble_results(
+    *,
+    portfolio: Portfolio,
+    master_dates: list[pd.Timestamp],
+    bars_by_tv: dict[str, pd.DataFrame],
+    cfg: BacktestConfig,
+    benchmark: pd.Series,
+    selection_rows: list[dict],
+    warnings: list[str],
+) -> BacktestResult:
+    """Assemble the trade ledger, equity curve, metrics and selection frame."""
     trades = portfolio.closed_trades()
 
     date_set: set[pd.Timestamp] = set(master_dates)
@@ -390,6 +468,72 @@ def run_rolling_backtest(
         metrics=metrics,
         warnings=warnings,
         selection=selection,
+    )
+
+
+def run_rolling_backtest(
+    cfg: BacktestConfig,
+    fetcher: PriceFetcher,
+    *,
+    start_date: date,
+    end_date: date,
+) -> BacktestResult:
+    """Run a daily rolling simulation over ``[start_date, end_date]``."""
+    warnings: list[str] = []
+    start_ts = pd.Timestamp(start_date).normalize()
+    end_ts = pd.Timestamp(end_date).normalize()
+    if end_ts < start_ts:
+        raise ValueError("end_date must be >= start_date")
+
+    setup = _prepare_simulation(
+        cfg,
+        fetcher,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        warnings=warnings,
+    )
+    if setup.early_result is not None:
+        return setup.early_result
+
+    assert setup.candidate_matrices is not None
+    assert setup.portfolio is not None
+    assert setup.fill_model is not None
+    assert setup.day_loop is not None
+
+    for day in setup.master_dates:
+        _simulate_day(
+            day,
+            day_loop=setup.day_loop,
+            candidate_matrices=setup.candidate_matrices,
+            bars_by_tv=setup.bars_by_tv,
+            cfg=cfg,
+            exit_ast=setup.exit_ast,
+            fill_model=setup.fill_model,
+            portfolio=setup.portfolio,
+            slot_states=setup.slot_states,
+            slot_bars=setup.slot_bars,
+            end_ts=end_ts,
+            selection_rows=setup.selection_rows,
+            warnings=warnings,
+        )
+
+    _force_close_open_slots(
+        slot_states=setup.slot_states,
+        slot_bars=setup.slot_bars,
+        cfg=cfg,
+        portfolio=setup.portfolio,
+        end_ts=end_ts,
+        fill_model=setup.fill_model,
+    )
+
+    return _assemble_results(
+        portfolio=setup.portfolio,
+        master_dates=setup.master_dates,
+        bars_by_tv=setup.bars_by_tv,
+        cfg=cfg,
+        benchmark=setup.benchmark,
+        selection_rows=setup.selection_rows,
+        warnings=warnings,
     )
 
 
@@ -621,7 +765,10 @@ def backtest_rolling(
     if tickers:
         ticker_tuple = tuple(t.strip() for t in tickers.split(",") if t.strip())
     elif not universe_file:
-        resolved_universe = universe or ("nifty50" if market == "india" else "sp500")
+        resolved_universe = cast(
+            UniverseName,
+            universe or ("nifty50" if market == "india" else "sp500"),
+        )
         loaded = load_current_universe(
             resolved_universe,
             as_of=end_date,

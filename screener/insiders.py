@@ -25,17 +25,17 @@ import os
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from typing import Optional, cast
 
 import pandas as pd
 import yfinance as yf
 
+from screener.backtester.data import tv_to_yf
 from screener.providers import CachedProvider, ProviderSpec
 from screener.resilience import call_with_resilience
 
 
 logger = logging.getLogger(__name__)
-_INDIA_SUFFIXES = (".NS", ".BO")
 _SCREENER_URL = "https://www.screener.in/company/{symbol}/"
 _SCREENER_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; screener-cli/1.0)"}
 
@@ -62,13 +62,6 @@ _OPENSCREENER_PROVIDER = CachedProvider(
         ttl_seconds=7 * 86400,
     )
 )
-
-
-def _tv_to_yf(ticker: str, market: str) -> str:
-    symbol = ticker.split(":", 1)[1] if ":" in ticker else ticker
-    if market == "india" and not symbol.endswith(_INDIA_SUFFIXES):
-        return f"{symbol}.NS"
-    return symbol
 
 
 # ── yfinance insider purchases ─────────────────────────────────────────────
@@ -144,7 +137,7 @@ def fetch_yfinance_insiders(
         return pd.DataFrame()
 
     jobs = [
-        (str(row["name"]), _tv_to_yf(str(row["ticker"]), market))
+        (str(row["name"]), tv_to_yf(str(row["ticker"]), market))
         for _, row in universe.iterrows()
     ]
     rows: list[dict] = []
@@ -323,7 +316,7 @@ def fetch_fmp_insiders(
         return pd.DataFrame()
 
     jobs = [
-        (str(row["name"]), _tv_to_yf(str(row["ticker"]), market))
+        (str(row["name"]), tv_to_yf(str(row["ticker"]), market))
         for _, row in universe.iterrows()
     ]
     rows: list[dict] = []
@@ -367,7 +360,8 @@ class _HttpScraper:
                 self.base_url.format(symbol=symbol.upper()), headers=_SCREENER_HEADERS
             )
             with urllib.request.urlopen(req, timeout=20) as resp:
-                return resp.read().decode("utf-8", "ignore")
+                # urlopen's context manager is Any-typed; decode yields str.
+                return str(resp.read().decode("utf-8", "ignore"))
 
         return call_with_resilience(
             "screener-in",
@@ -494,4 +488,4 @@ def filter_promoter_increased(
             pct = pd.to_numeric(insiders.get("yf_net_pct_6m"), errors="coerce")
             mask = mask & (pct >= min_yf_net_pct)
 
-    return insiders[mask.fillna(False)].copy()
+    return cast(pd.DataFrame, insiders[mask.fillna(False)].copy())

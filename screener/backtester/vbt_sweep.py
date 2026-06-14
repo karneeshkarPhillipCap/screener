@@ -67,7 +67,7 @@ from screener.backtester.optimization.walk_forward import (
     _parameter_stability,
     generate_walk_forward_windows,
 )
-from screener.universes import load_current_universe
+from screener.universes import UniverseName, load_current_universe
 
 DISCLAIMER = (
     "[yellow]Exploration only — approximations; validate with backtest-rolling.\n"
@@ -180,10 +180,11 @@ def parse_indicator_list(raw: str) -> list[str]:
 
 
 def _sma(close: pd.DataFrame, window: int, vbt: Any) -> pd.DataFrame:
+    # vbt is Any (optional dep), so ma_out and its operations are Any.
     ma_out = vbt.MA.run(close, window=window).ma
     if isinstance(ma_out.columns, pd.MultiIndex):
-        return ma_out.xs(window, axis=1, level="ma_window")
-    return ma_out
+        return cast(pd.DataFrame, ma_out.xs(window, axis=1, level="ma_window"))
+    return cast(pd.DataFrame, ma_out)
 
 
 def _fixed_hold_exits_np(arr: np.ndarray, hold: int) -> np.ndarray:
@@ -210,7 +211,9 @@ def _fixed_hold_exits(entries: pd.DataFrame, hold: int) -> pd.DataFrame:
 
 def _ma_for_window(ma_panel: pd.DataFrame, window: int) -> pd.DataFrame:
     if isinstance(ma_panel.columns, pd.MultiIndex):
-        return ma_panel.xs(window, axis=1, level="ma_window")
+        # xs(axis=1, level=...) on a MultiIndex column frame returns a DataFrame;
+        # pandas-stubs types it as DataFrame | Series, so narrow with cast.
+        return cast(pd.DataFrame, ma_panel.xs(window, axis=1, level="ma_window"))
     return ma_panel
 
 
@@ -1595,7 +1598,10 @@ def vbt_sweep(
             if line.strip() and not line.strip().startswith("#")
         ]
     else:
-        resolved_universe = universe or ("nifty50" if market == "india" else "sp500")
+        resolved_universe = cast(
+            UniverseName,
+            universe or ("nifty50" if market == "india" else "sp500"),
+        )
         loaded = load_current_universe(
             resolved_universe,
             as_of=end_date,

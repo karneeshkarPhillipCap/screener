@@ -7,7 +7,7 @@ Alpha/beta use a simple OLS fit via ``numpy.polyfit`` — no sklearn.
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 import numpy as np
 import pandas as pd
@@ -33,8 +33,12 @@ def _cagr(equity: pd.Series) -> float:
     end = float(equity.iloc[-1])
     if start <= 0:
         return 0.0
-    years = max(len(equity) / TRADING_DAYS_PER_YEAR, 1e-9)
-    return (end / start) ** (1.0 / years) - 1.0
+    # Annualize over the elapsed return periods (N-1 for an N-point curve), not
+    # the point count: an N-bar equity curve spans N-1 daily returns, so the
+    # horizon is (N-1)/252 years. Using len(equity)/252 overstated the horizon
+    # by one bar and understated CAGR; this matches empyrical's convention.
+    years = max((len(equity) - 1) / TRADING_DAYS_PER_YEAR, 1e-9)
+    return float((end / start) ** (1.0 / years) - 1.0)
 
 
 def _max_drawdown(equity: pd.Series) -> float:
@@ -139,8 +143,8 @@ def _psr(daily: pd.Series, sr_benchmark_annual: float = 0.0) -> float:
     T = len(daily)
     sr_per = _sharpe(daily) / math.sqrt(TRADING_DAYS_PER_YEAR)
     sr_bench_per = sr_benchmark_annual / math.sqrt(TRADING_DAYS_PER_YEAR)
-    skew = float(daily.skew()) if daily.std(ddof=0) else 0.0
-    kurt_excess = float(daily.kurt()) if daily.std(ddof=0) else 0.0
+    skew = float(cast(Any, daily.skew())) if daily.std(ddof=0) else 0.0
+    kurt_excess = float(cast(Any, daily.kurt())) if daily.std(ddof=0) else 0.0
     denom_sq = 1.0 - skew * sr_per + (kurt_excess / 4.0) * sr_per * sr_per
     denom = math.sqrt(max(denom_sq, 1e-12))
     z = (sr_per - sr_bench_per) * math.sqrt(max(T - 1, 1)) / denom
@@ -250,7 +254,7 @@ def compute_metrics(
         "hit_rate": hit_rate,
         "alpha_annual": alpha,
         "beta": beta,
-        "exposure": _exposure(equity.index, trades, slot_count),
+        "exposure": _exposure(cast(pd.DatetimeIndex, equity.index), trades, slot_count),
         "benchmark_return": bench_return,
         "trade_count": len(trades),
         "invested_return": _invested_return(trades),
