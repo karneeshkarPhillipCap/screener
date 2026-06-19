@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 from click.testing import CliRunner
 
@@ -12,6 +12,7 @@ from screener.cli import cli as package_cli
 from screener.conviction import (
     PILLAR_WEIGHTS,
     _ok,
+    _promoter_pair_as_of,
     _skipped,
     build_conviction_card,
     compose,
@@ -21,8 +22,13 @@ from tests.conftest import StubPriceFetcher, make_bars
 
 
 def _price_env(n: int = 280):
-    bars = make_bars(start="2024-01-02", n=n, drift=0.4, seed=7)
-    bench = make_bars(start="2024-01-02", n=n, drift=0.05, seed=21, open_base=400.0)
+    # Anchor the window so the final bar is ~today: the conviction card's
+    # point-in-time guards skip the latest-only fundamentals/pledge pillars
+    # when ``as_of`` is materially in the past, so the "all pillars ok" cases
+    # must evaluate a recent as_of.
+    start = (date.today() - timedelta(days=int(n * 1.4))).isoformat()
+    bars = make_bars(start=start, n=n, drift=0.4, seed=7)
+    bench = make_bars(start=start, n=n, drift=0.05, seed=21, open_base=400.0)
     return bars, bench
 
 
@@ -30,7 +36,7 @@ def _patch_india_providers(monkeypatch) -> None:
     monkeypatch.setattr(
         conviction_mod,
         "_load_smart_money_india",
-        lambda symbol, *, cache_ttl, refresh: {
+        lambda symbol, as_of, *, cache_ttl, refresh: {
             "promoter_pct_latest": 51.0,
             "promoter_pct_prev": 50.0,
             "promoter_change": 1.0,
@@ -204,3 +210,74 @@ def test_cli_table_output(monkeypatch):
     assert "Composite conviction" in res.output
     for name in ("trend", "breakout", "volume", "smart_money", "fundamentals", "risk"):
         assert name in res.output
+
+
+# ── point-in-time leakage (H-4) ─────────────────────────────────────────────
+
+
+def test_promoter_pair_selects_record_on_or_before_as_of():
+    # Quarters become public ~45 days after the fiscal period-end, so "Mar 2024"
+    # (period-end 2024-03-31) is known only from ~mid-May 2024. An as_of of
+    # 2024-04-15 must therefore stop at the Dec 2023 result, never Mar 2024.
+    rows = [
+        {"date": "Jun 2023", "promoters": 40.0},
+        {"date": "Sep 2023", "promoters": 41.0},
+        {"date": "Dec 2023", "promoters": 42.0},
+        {"date": "Mar 2024", "promoters": 50.0},  # public ~mid-May 2024
+    ]
+    pair = _promoter_pair_as_of(rows, date(2024, 4, 15))
+    assert pair is not None
+    # Latest visible is Dec 2023 (public ~mid-Feb), prev Sep 2023.
+    assert pair["latest_quarter"] == "Dec 2023"
+    assert pair["promoter_pct_latest"] == 42.0
+    assert pair["promoter_pct_prev"] == 41.0
+    # The post-as_of Mar 2024 jump to 50% must not leak in.
+    assert pair["promoter_pct_latest"] != 50.0
+
+
+def test_past_as_of_skips_latest_only_fundamentals_and_pledge(monkeypatch):
+    bars, bench = _price_env()
+    # Evaluate well in the past: latest-only fundamentals/pledge loaders cannot
+    # be reconstructed point-in-time, so those pillars must be skipped (not
+    # silently scored with today's data).
+    as_of = bars.index[120].date()
+    assert (date.today() - as_of).days > 7
+    fetcher = StubPriceFetcher({"RELIANCE.NS": bars, "^NSEI": bench})
+
+    full_history = [
+        {"date": "Mar 2023", "promoters": 48.0},
+        {"date": "Jun 2023", "promoters": 49.0},
+        {"date": "Sep 2023", "promoters": 50.0},
+        {"date": "Dec 2023", "promoters": 51.0},
+    ]
+
+    def _fake_shareholding(namespace, key_parts, *, ttl_seconds, refresh, fetch):
+        return full_history
+
+    monkeypatch.setattr(conviction_mod, "cached_json_call", _fake_shareholding)
+    # If these latest-only loaders were ever called for a past as_of they would
+    # leak future data; assert they are not invoked instead.
+    monkeypatch.setattr(
+        conviction_mod,
+        "_load_fundamentals",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("fundamentals leaked")),
+    )
+    monkeypatch.setattr(
+        conviction_mod,
+        "_load_pledge",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("pledge leaked")),
+    )
+
+    card = build_conviction_card("RELIANCE", "india", as_of, fetcher)
+    by_name = {p.name: p for p in card.pillars}
+
+    assert by_name["fundamentals"].status == "skipped"
+    assert str(as_of) in by_name["fundamentals"].reason
+    assert by_name["risk"].status == "skipped"
+    assert str(as_of) in by_name["risk"].reason
+    # Smart money still resolves, but only from quarters public by as_of.
+    sm = by_name["smart_money"]
+    if sm.status == "ok":
+        # The chosen quarter is carried in the evidence; it must be one whose
+        # period-end + filing lag is on or before as_of.
+        assert "qtr" in sm.evidence

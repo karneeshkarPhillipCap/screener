@@ -34,6 +34,14 @@ SENTIMENT_CACHE_DAYS = 1
 MAX_WORKERS = 12
 _YFINANCE_TIMEOUT_PATCHED = False
 
+# Indian companies report a fiscal quarter's results ~45-60 days after the
+# period-end (e.g. "Mar 2024" results are announced in May 2024). screener.in
+# only exposes the fiscal PERIOD-END label, not the announcement date, so a
+# period-end keyed event would be applied before it was ever public. We add a
+# conservative filing lag to the period-end as a point-in-time floor; the real
+# NSE announcement date (when available) is preferred over this estimate.
+INDIA_EARNINGS_FILING_LAG_DAYS = 45
+
 
 def _install_yfinance_timeout_patch() -> None:
     """Cap yfinance's internal request timeout for scrape/API calls."""
@@ -348,10 +356,21 @@ def _fetch_yf_earnings_rows(
 def fetch_earnings_dates_openscreener(
     ticker: str,
     years: int = 3,
+    filing_lag_days: int = INDIA_EARNINGS_FILING_LAG_DAYS,
 ) -> Optional[pd.DataFrame]:
-    """Return India quarterly result periods from screener.in via openscreener."""
+    """Return India quarterly result periods from screener.in via openscreener.
+
+    screener.in keys each row on the fiscal PERIOD-END (e.g. ``"Mar 2024"`` →
+    2024-03-31). Indian results are only announced ~45-60 days later, so the
+    bare period-end leaks information into the backtest. We add
+    ``filing_lag_days`` to the period-end as a point-in-time floor for when the
+    result became public. Callers that have the actual NSE announcement date
+    should prefer it (see :func:`collect_earnings_events`).
+    """
     symbol = ticker.replace(".NS", "").replace(".BO", "")
-    cache_path = _json_cache_path("earnings_openscreener", f"{symbol}_{years}")
+    cache_path = _json_cache_path(
+        "earnings_openscreener", f"{symbol}_{years}_{filing_lag_days}"
+    )
     hit, cached = _read_json_cache(cache_path, EARNINGS_CACHE_DAYS)
     if hit and cached:
         return _earnings_from_records(cached or [])
@@ -385,9 +404,14 @@ def fetch_earnings_dates_openscreener(
                 continue
             if period_end < cutoff:
                 continue
+            # Apply the filing lag: the result is not public until ~45 days
+            # after the fiscal period-end. Use that as the (estimated) event
+            # date so the backtest never acts on it before it was announced.
+            announce_date = period_end + pd.Timedelta(days=filing_lag_days)
             records.append(
                 {
-                    "earnings_date": period_end.date().isoformat(),
+                    "earnings_date": announce_date.date().isoformat(),
+                    "period_end": period_end.date().isoformat(),
                     "eps_estimate": None,
                     "reported_eps": _jsonable(item.get("eps")),
                     "surprise_pct": None,
@@ -416,6 +440,7 @@ def _openscreener_earnings_rows_for_ticker(
             {
                 "ticker": ticker,
                 "earnings_date": idx.date() if hasattr(idx, "date") else idx,
+                "period_end": row.get("period_end"),
                 "eps_estimate": row.get("EPS Estimate", float("nan")),
                 "reported_eps": row.get("Reported EPS", float("nan")),
                 "surprise_pct": row.get("Surprise(%)", float("nan")),
@@ -466,7 +491,13 @@ def collect_earnings_events(
     rows: list[dict] = []
 
     if market == "india":
-        # Try NSE corporate announcements first (broader coverage)
+        # NSE-announced (ticker, fiscal-quarter) pairs already covered by a real
+        # announcement date, so the openscreener period-end+lag estimate for the
+        # same result is not double-counted.
+        nse_quarters: set[tuple[str, pd.Period]] = set()
+
+        # Try NSE corporate announcements first (broader coverage). These carry
+        # the real announcement (``sort_date``) — already point-in-time.
         nse_events = fetch_earnings_dates_nse()
         if nse_events is not None and not nse_events.empty:
             # Only keep tickers in our universe
@@ -476,6 +507,16 @@ def collect_earnings_events(
             cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
             filtered = filtered[filtered["earnings_date"] >= cutoff]
             for _, row in filtered.iterrows():
+                ann = pd.Timestamp(row["earnings_date"])
+                # Map the announcement back to the fiscal quarter it reports on:
+                # the quarter that ended most recently BEFORE the announcement
+                # (results are filed after the quarter closes). Rolling back to
+                # the prior quarter-end is stable across the realistic 30-90d
+                # filing-delay range; subtracting a fixed 45d drifts into the
+                # NEXT quarter once the delay exceeds 45d, which broke dedup and
+                # double-counted the result against the openscreener estimate.
+                reported_quarter = (ann + pd.offsets.QuarterEnd(-1)).to_period("Q")
+                nse_quarters.add((str(row["ticker"]), reported_quarter))
                 rows.append(
                     {
                         "ticker": row["ticker"],
@@ -494,7 +535,19 @@ def collect_earnings_events(
                 "openscreener_earnings_batch",
                 extra={"batch": f"{i}-{i + len(batch)}", "size": len(batch)},
             )
-            rows.extend(_fetch_openscreener_earnings_rows(batch, years, batch_size))
+            for osc_row in _fetch_openscreener_earnings_rows(batch, years, batch_size):
+                # Drop openscreener rows whose fiscal quarter is already covered
+                # by a real NSE announcement for the same ticker (dedup).
+                pe = osc_row.get("period_end")
+                if pe is not None:
+                    quarter = pd.Timestamp(pe).to_period("Q")
+                    if (str(osc_row["ticker"]), quarter) in nse_quarters:
+                        continue
+                rows.append(
+                    {
+                        k: v for k, v in osc_row.items() if k != "period_end"
+                    }
+                )
     else:
         # US: yfinance
         for i in range(0, len(tickers), batch_size):

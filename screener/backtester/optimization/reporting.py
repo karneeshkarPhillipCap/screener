@@ -15,6 +15,15 @@ from screener.backtester.optimization.grid import GridSearchResult
 from screener.backtester.optimization.walk_forward import WalkForwardSummary
 
 
+GRID_IN_SAMPLE_DISCLAIMER = (
+    "IN-SAMPLE / SELECTION BIAS WARNING: These metrics are computed on the SAME "
+    "data the grid selected the best parameters from. The headline best-of-grid "
+    "Sharpe is optimistically biased and is NOT an out-of-sample estimate of "
+    "future performance. Use `optimize walk-forward` for an honest, out-of-sample "
+    "assessment before trusting these parameters."
+)
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
@@ -59,6 +68,12 @@ def print_grid_table(
             json.dumps(result.params, sort_keys=True),
         )
     console.print(table)
+    console.print(
+        GRID_IN_SAMPLE_DISCLAIMER.replace(
+            "IN-SAMPLE / SELECTION BIAS WARNING:",
+            "[bold yellow]IN-SAMPLE / SELECTION BIAS WARNING:[/bold yellow]",
+        )
+    )
 
 
 def print_walk_forward_table(
@@ -88,9 +103,18 @@ def print_walk_forward_table(
 
 
 def write_html_report(
-    data: Any, path: Path | str, title: str = "Optimization Report"
+    data: Any,
+    path: Path | str,
+    title: str = "Optimization Report",
+    disclaimer: str | None = None,
 ) -> None:
     payload = json.dumps(data, indent=2, default=_json_default)
+    banner = (
+        f'  <p style="background:#fff3cd; border:1px solid #ffeeba; color:#856404; '
+        f'padding:12px 16px; border-radius:4px; font-weight:600;">{disclaimer}</p>\n'
+        if disclaimer
+        else ""
+    )
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -103,7 +127,7 @@ def write_html_report(
 </head>
 <body>
   <h1>{title}</h1>
-  <pre>{payload}</pre>
+{banner}  <pre>{payload}</pre>
 </body>
 </html>
 """

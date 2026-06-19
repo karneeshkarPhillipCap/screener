@@ -15,6 +15,7 @@ from screener.backtester.models import BacktestConfig, ExitReason, Trade
 from screener.backtester.optimization.grid import grid_search
 from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.reporting import (
+    GRID_IN_SAMPLE_DISCLAIMER,
     print_grid_table,
     print_walk_forward_table,
     write_html_report,
@@ -285,9 +286,19 @@ def optimize_grid(**kwargs) -> None:
     print_grid_table(results)
     payload = [result.model_dump(mode="json") for result in results]
     if kwargs["json_path"]:
-        write_json_report(payload, kwargs["json_path"])
+        # Wrap with the in-sample/selection-bias warning so the exported artifact
+        # cannot be mistaken for an out-of-sample estimate (M-4).
+        write_json_report(
+            {"warning": GRID_IN_SAMPLE_DISCLAIMER, "results": payload},
+            kwargs["json_path"],
+        )
     if kwargs["html_path"]:
-        write_html_report(payload, kwargs["html_path"], "Grid Search Report")
+        write_html_report(
+            payload,
+            kwargs["html_path"],
+            "Grid Search Report",
+            disclaimer=GRID_IN_SAMPLE_DISCLAIMER,
+        )
 
 
 @optimize.command(name="walk-forward")

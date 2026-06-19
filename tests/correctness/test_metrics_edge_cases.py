@@ -170,17 +170,28 @@ def test_sortino_all_positive_returns_zero():
 
 
 def test_sortino_single_negative_computes_correctly():
-    """One negative value gives a downside std of 0 (single element, ddof=0) → 0.0."""
+    """One negative value → canonical target-downside-deviation is non-zero.
+
+    M-2 fix: denominator is RMS of min(excess, 0) over ALL N periods
+    (sqrt(mean(min(excess,0)**2))), not std of the negatives-only subset.
+    For [0.01, 0.02, -0.005, 0.015]: mean=0.01, downside_dev=sqrt((-0.005)**2/4)
+    =0.0025, so sortino = 0.01/0.0025*sqrt(252) = 63.49803146555016.
+    Matches empyrical.sortino_ratio exactly.
+    """
     one_neg = pd.Series([0.01, 0.02, -0.005, 0.015])
-    # downside = [-0.005]; std(ddof=0) of a single element = 0 → guard fires
-    assert _sortino(one_neg) == 0.0
+    assert abs(_sortino(one_neg) - 63.49803146555016) < 1e-9
 
 
 def test_sortino_two_equal_negatives_zero_std_returns_zero():
-    """Two identical negative returns → std(ddof=0) = 0 → 0.0."""
+    """Two identical negatives → RMS downside deviation is non-zero.
+
+    M-2 fix: target-downside-deviation over ALL N periods. For
+    [0.01, -0.005, -0.005, 0.02]: mean=0.005, downside_dev=
+    sqrt(((-0.005)**2+(-0.005)**2)/4)=0.0035355..., so sortino =
+    0.005/0.0035355*sqrt(252) = 22.449944320643652. Matches empyrical.
+    """
     returns = pd.Series([0.01, -0.005, -0.005, 0.02])
-    # downside std(ddof=0) = 0 → guard fires
-    assert _sortino(returns) == 0.0
+    assert abs(_sortino(returns) - 22.449944320643652) < 1e-9
 
 
 # ---------------------------------------------------------------------------

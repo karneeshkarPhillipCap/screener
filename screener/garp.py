@@ -149,6 +149,10 @@ def add_garp_score(df: pd.DataFrame) -> pd.DataFrame:
         return pd.to_numeric(scored[col], errors="coerce").rank(pct=True).fillna(0)
 
     peg = pd.to_numeric(scored["peg"], errors="coerce")
+    # A negative (loss-making) or zero PEG is not a value signal: NaN it before
+    # ranking so it flows through as a missing factor (fillna(0)) instead of
+    # ranking lowest and earning a top inv_peg.
+    peg = peg.where(peg > 0)
     inv_peg = (1 - peg.rank(pct=True)).fillna(0)
     scored["garp_score"] = (
         30 * inv_peg

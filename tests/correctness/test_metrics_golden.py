@@ -68,20 +68,18 @@ def test_sharpe_matches_numpy_formula_directly():
 def test_sortino_five_bar_golden():
     """_sortino([0.02, -0.01, 0.03, -0.02, 0.01])
 
-    Derivation (rf=0):
-        mean           = (0.02-0.01+0.03-0.02+0.01) / 5 = 0.03/5 = 0.006
-        downside only  = [-0.01, -0.02]
-        mean_downside  = (-0.01 + -0.02) / 2 = -0.015
-        deviations     = [-0.01-(-0.015), -0.02-(-0.015)] = [0.005, -0.005]
-        var_pop        = (0.005^2 + 0.005^2) / 2 = 5e-5
-        std_pop        = sqrt(5e-5) = 0.005
-        sortino        = 0.006 / 0.005 * sqrt(252) = 1.2 * sqrt(252) ≈ 19.0494
+    Derivation (rf=0; canonical target-downside-deviation, target=0):
+        mean             = (0.02-0.01+0.03-0.02+0.01) / 5 = 0.03/5 = 0.006
+        min(r, 0)        = [0, -0.01, 0, -0.02, 0]
+        sum of squares   = 0 + 0.01^2 + 0 + 0.02^2 + 0 = 1e-4 + 4e-4 = 5e-4
+        target_dd        = sqrt(5e-4 / 5) = sqrt(1e-4) = 0.01  (RMS over ALL N=5)
+        sortino          = 0.006 / 0.01 * sqrt(252) = 0.6 * sqrt(252) ≈ 9.5247
     """
     returns = pd.Series([0.02, -0.01, 0.03, -0.02, 0.01])
 
     mean = 3 / 500  # = 0.006
-    std_down = 5e-3  # = 0.005 (derived above)
-    expected = mean / std_down * math.sqrt(252)
+    target_dd = 1e-2  # = sqrt(5e-4 / 5) = 0.01 (RMS of min(r,0) over all N)
+    expected = mean / target_dd * math.sqrt(252)
 
     assert abs(_sortino(returns) - expected) < 1e-7
 
