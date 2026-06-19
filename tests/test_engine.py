@@ -182,8 +182,8 @@ def test_exit_expression_triggers_at_close():
     outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg, exit_ast=exit_ast)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "exit_expr"
-    assert outcome.trade.exit_date == bars.index[7].date()
-    assert outcome.trade.exit_price == pytest.approx(float(bars.iloc[7]["close"]))
+    assert outcome.trade.exit_date == bars.index[8].date()
+    assert outcome.trade.exit_price == pytest.approx(float(bars.iloc[8]["open"]))
 
 
 def test_time_exit_after_N_bars():

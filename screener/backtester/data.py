@@ -626,3 +626,26 @@ def ensure_date(value) -> date:
     if isinstance(value, str):
         return datetime.fromisoformat(value).date()
     raise TypeError(f"Cannot convert {value!r} to date")
+
+
+def apply_splits_only_adjustment(bars_dict: dict[str, pd.DataFrame]) -> None:
+    """Apply split_factor to raw OHLCV and dividends in-place.
+    
+    YFinance returns completely raw OHLC when auto_adjust=False. To get
+    'splits_only' (split-adjusted OHLC but raw cash dividends), we must
+    manually back-adjust the raw OHLC and the raw dividend amounts using
+    the `split_factor` derived from `stock_splits`.
+    """
+    for ticker, df in bars_dict.items():
+        if df is None or df.empty or "split_factor" not in df.columns:
+            continue
+        factor = df["split_factor"]
+        # Fast path: if all factors are 1.0 (or NaN), no adjustment needed.
+        if (factor == 1.0).all():
+            continue
+        for col in ["open", "high", "low", "close", "dividend"]:
+            if col in df.columns:
+                df[col] = df[col] / factor
+        if "volume" in df.columns:
+            df["volume"] = df["volume"] * factor
+

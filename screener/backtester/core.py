@@ -277,8 +277,15 @@ def _check_exit_at_bar(
     if high > state.peak:
         state.peak = high
 
-    if state.exit_signal is not None and bool(state.exit_signal.iloc[i]):
-        return _sell("exit_expr"), "exit_expr"
+    if state.exit_signal is not None and i > 0 and bool(state.exit_signal.iloc[i - 1]):
+        return fill_model.exit_price(
+            reason="exit_expr",
+            bar_open=bar_open,
+            level=None,
+            close=bar_open,  # Use open price for next-day execution
+            adv_shares=state.adv_shares,
+            sigma_daily=state.sigma_daily,
+        ), "exit_expr"
     if i >= state.hold_limit_idx:
         return _sell("time"), "time"
     return None

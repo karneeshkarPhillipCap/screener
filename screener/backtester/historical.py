@@ -318,6 +318,10 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     end = (as_of_ts + pd.Timedelta(days=cfg.hold * 2 + 30)).date()
     price_panel = fetcher.fetch(yf_symbols, start, end)
 
+    if cfg.price_adjustment == "splits_only":
+        from screener.backtester.data import apply_splits_only_adjustment
+        apply_splits_only_adjustment(price_panel)
+
     bars_by_tv = {
         tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
     }
@@ -385,7 +389,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
             ).tolist()
         )
     calendar = pd.DatetimeIndex(sorted(date_set))
-    equity = build_equity_curve(calendar, trades, bars_by_tv, cfg.initial_capital)
+    equity = build_equity_curve(calendar, trades, bars_by_tv, cfg.initial_capital, cfg.price_adjustment)
 
     benchmark = fetch_benchmark(cfg.benchmark, start, end, fetcher)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()

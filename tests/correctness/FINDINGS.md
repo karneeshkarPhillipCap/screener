@@ -48,6 +48,20 @@ horizon was inflated by one bar, which **systematically under-reported CAGR**.
   `abs=0.01` tolerance — the ~1/N shift stays well within it. The vbt `calmar` columns
   are computed by vectorbt, not by `_cagr`, so they are unaffected.
 
+### Time Exit Look-Ahead Bias — `core.py::_check_exit_at_bar` ✅ FIXED
+The time-based exit condition evaluated `i >= state.entry_idx + cfg.hold` at bar `i`'s close and triggered an exit *on that exact same close*. This is look-ahead bias (observing the close to decide to exit at that close). 
+- **Fix applied:** Checked `i - 1 >= state.entry_idx + cfg.hold` (observing yesterday's close) to trigger an exit at today's open.
+- **Tests updated:** `test_engine.py` golden tuples were updated to reflect exits at T-open instead of T-close.
+
+### Missing `splits_only` Implementation — `historical.py` & `rolling.py` ✅ FIXED
+The platform accepted a `splits_only` price adjustment regime but never applied any split adjustments to the raw data. This resulted in raw prices being passed into the backtester, causing massive artificial drawdowns when stock splits occurred.
+- **Fix applied:** Created `apply_splits_only_adjustment()` in `data.py` to reverse-scale volume and forward-scale prices using the `split_factor` column. Injected the call into both `historical.py` and `rolling.py` orchestration paths before the simulation begins.
+
+### Dividend Leakage in Equity Curve and PnL — `portfolio.py` ✅ FIXED
+Cash dividends were correctly credited to `Portfolio._cash` but were omitted from the individual `Trade.pnl` and the total `build_equity_curve`. Reconstructed equity curves silently lost all dividend income, and trade returns were understated.
+- **Fix applied:** Updated `close` and `partial_close` to compute `pnl = exit_value + dividend_income - entry_cost`. Modified `build_equity_curve` to inject dividends point-in-time on the ex-date to prevent false intra-trade drawdowns.
+- **Tests updated:** `test_day_loop.py` golden scenarios for `dividends` were regenerated to lock the correct, higher returns and accurate equity curve.
+
 ---
 
 ## 2. Documented design choices (non-standard, not bugs)

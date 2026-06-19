@@ -150,7 +150,7 @@ class Portfolio:
         exit_value = proceeds - commission
         self._cash += exit_value
         entry_cost = position.slot_capital
-        pnl = exit_value - entry_cost
+        pnl = exit_value + position.dividend_income - entry_cost
         return_pct = pnl / entry_cost if entry_cost else 0.0
         trade = Trade(
             ticker=ticker,
@@ -206,7 +206,7 @@ class Portfolio:
         commission = proceeds * c
         exit_value = proceeds - commission
         self._cash += exit_value
-        pnl = exit_value - pro_rata_cost
+        pnl = exit_value + pro_rata_div - pro_rata_cost
         return_pct = pnl / pro_rata_cost if pro_rata_cost else 0.0
         trade = Trade(
             ticker=ticker,
@@ -250,6 +250,7 @@ def build_equity_curve(
     trades: Iterable[Trade],
     price_panel: dict[str, pd.DataFrame],
     initial_capital: float,
+    price_adjustment: str = "full",
 ) -> pd.Series:
     """Reconstruct the equity curve from a list of completed trades.
 
@@ -301,6 +302,13 @@ def build_equity_curve(
                 # bar can't poison the equity endpoint (NaN -> NaN total return).
                 prior = frame.loc[frame.index <= day, "close"].dropna()
                 price = float(prior.iloc[-1]) if not prior.empty else trade.entry_price
+            
+            # Credit dividends on ex-date to avoid false drawdowns in the equity curve
+            if price_adjustment != "full" and day > pd.Timestamp(trade.entry_date) and "dividend" in frame.columns and day in frame.index:
+                div = float(cast(Any, frame.loc[day, "dividend"]))
+                if pd.notna(div) and div > 0:
+                    cash += trade.shares * div
+                    
             mtm += trade.shares * price
         equity.loc[day] = cash + mtm
     return equity
