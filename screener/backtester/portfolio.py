@@ -150,8 +150,13 @@ class Portfolio:
         exit_value = proceeds - commission
         self._cash += exit_value
         entry_cost = position.slot_capital
-        pnl = exit_value - entry_cost
-        return_pct = pnl / entry_cost if entry_cost else 0.0
+        # Total PnL = capital return + dividend income. ``dividend_income`` is
+        # 0 in full mode (dividends are baked into adjusted prices there), so
+        # full-mode pnl is unchanged; in splits_only/none it adds the cash
+        # dividends credited while the lot was held. ``return_pct`` keeps its
+        # capital-only definition for report continuity.
+        pnl = exit_value - entry_cost + position.dividend_income
+        return_pct = (exit_value - entry_cost) / entry_cost if entry_cost else 0.0
         trade = Trade(
             ticker=ticker,
             rank=self._ranks.get(ticker, 0),
@@ -206,8 +211,12 @@ class Portfolio:
         commission = proceeds * c
         exit_value = proceeds - commission
         self._cash += exit_value
-        pnl = exit_value - pro_rata_cost
-        return_pct = pnl / pro_rata_cost if pro_rata_cost else 0.0
+        # Total PnL includes the pro-rata dividend income for the closed sleeve
+        # (0 in full mode). ``return_pct`` stays capital-only for continuity.
+        pnl = exit_value - pro_rata_cost + pro_rata_div
+        return_pct = (
+            (exit_value - pro_rata_cost) / pro_rata_cost if pro_rata_cost else 0.0
+        )
         trade = Trade(
             ticker=ticker,
             rank=self._ranks.get(ticker, 0),
@@ -250,13 +259,21 @@ def build_equity_curve(
     trades: Iterable[Trade],
     price_panel: dict[str, pd.DataFrame],
     initial_capital: float,
+    price_adjustment: str = "full",
 ) -> pd.Series:
     """Reconstruct the equity curve from a list of completed trades.
 
     On each calendar date, equity = cash + Σ shares * close for positions that
     are open that day (after applying all trade events dated <= that day, with
     entries processed before exits on the same day).
+
+    In non-``full`` price-adjustment regimes the per-share ``dividend`` column
+    of each frame is credited as cash on/after the ex-date for the shares held
+    that day, mirroring ``Portfolio.credit_dividends``. ``full`` mode bakes
+    dividends into adjusted prices, so the dividend stream is skipped there and
+    the curve is unchanged.
     """
+    credit_dividends = price_adjustment != "full"
     trades = list(trades)
     # Event list keyed by a monotonically-increasing trade sequence so two
     # trades on the same ticker (re-entry or pyramiding) are tracked
@@ -267,6 +284,32 @@ def build_equity_curve(
         events.append((pd.Timestamp(t.entry_date), 1, seq, t))  # 1 = open
         events.append((pd.Timestamp(t.exit_date), 0, seq, t))  # 0 = close (first)
     events.sort(key=lambda e: (e[0], e[1], e[2]))
+
+    # Per-trade ex-date dividend cash, keyed by the calendar day on which it is
+    # credited. The engine credits dividends on every ex-date bar strictly
+    # after entry up to and including the exit bar (see core._maybe_credit_
+    # dividends + _close_slot_at_day ordering), so mirror that window here so
+    # the curve carries exactly the dividend stream behind each trade's
+    # ``dividend_income``. Skipped entirely in full mode.
+    dividend_cash_by_day: dict[pd.Timestamp, float] = {}
+    if credit_dividends:
+        for t in trades:
+            frame = price_panel.get(t.ticker)
+            if frame is None or frame.empty or "dividend" not in frame.columns:
+                continue
+            entry_ts = pd.Timestamp(t.entry_date)
+            exit_ts = pd.Timestamp(t.exit_date)
+            window = frame.loc[
+                (frame.index > entry_ts) & (frame.index <= exit_ts), "dividend"
+            ]
+            for ex_day, div in window.items():
+                div = float(cast(Any, div))
+                if pd.isna(div) or div <= 0:
+                    continue
+                ex_ts = pd.Timestamp(cast(Any, ex_day))
+                dividend_cash_by_day[ex_ts] = (
+                    dividend_cash_by_day.get(ex_ts, 0.0) + t.shares * div
+                )
 
     cash = float(initial_capital)
     open_positions: dict[int, Trade] = {}
@@ -283,6 +326,14 @@ def build_equity_curve(
                 open_positions.pop(seq, None)
                 cash += trade.exit_value
             ev_idx += 1
+
+        if dividend_cash_by_day:
+            # Credit every ex-date dividend whose date has been reached. Using
+            # ``<= day`` rather than an exact match means an ex-date that is not
+            # itself a calendar point (rare: a held lot whose ticker lacks that
+            # bar) is still credited on the next curve point rather than lost.
+            for ex_ts in [d for d in dividend_cash_by_day if d <= day]:
+                cash += dividend_cash_by_day.pop(ex_ts)
 
         mtm = 0.0
         for trade in open_positions.values():

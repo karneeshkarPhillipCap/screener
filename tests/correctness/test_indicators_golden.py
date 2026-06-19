@@ -53,11 +53,18 @@ def test_atr_first_bar_true_range_golden():
     np.testing.assert_allclose(got[1:], [a1, a2], atol=1e-12, rtol=0)
 
 
-def test_rsi_all_up_equals_100():
-    """A strictly increasing series has zero downside → RSI pinned at 100."""
+def test_rsi_all_up_warmup_nan_then_100():
+    """A strictly increasing series: the n-1 warm-up bars are NaN (RMA warm-up
+    convention); post-warm-up bars have zero downside → RSI pinned at 100.
+
+    (Previously the warm-up region was a spurious 100 because rma_dn=NaN made
+    rs=inf — the NaN-warmup fix removes that false overbought signal.)
+    """
+    n = 3
     close = np.array([10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
-    got = rsi(close, 3)
-    assert np.all(got == 100.0)
+    got = rsi(close, n)
+    assert np.isnan(got[: n - 1]).all()
+    assert np.all(got[n - 1 :] == 100.0)
 
 
 def test_rsi_mixed_golden():

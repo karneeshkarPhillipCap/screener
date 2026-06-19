@@ -441,6 +441,69 @@ class TestGarpInvPeg:
         assert result.loc[2.0, "garp_score"] == pytest.approx(60.0, abs=0.01)
 
 
+class TestGarpNegativePeg:
+    """L-3: a negative (loss-making) or zero PEG is not a value signal.
+
+    add_garp_score now NaNs non-positive PEG before ranking, so it flows through
+    as a missing factor (inv_peg via fillna(0) → 0.0) rather than ranking lowest
+    and earning a top inv_peg (~1.0). The 30*inv_peg term is the largest single
+    weight, so the bug previously handed loss-making names a big value boost.
+    """
+
+    def _other_cols(self, n: int) -> dict:
+        # All non-peg metrics increasing with row index so their ranks are known.
+        return {
+            "eps_growth_5y": [10.0 * (i + 1) for i in range(n)],
+            "sales_growth_5y": [10.0 * (i + 1) for i in range(n)],
+            "roe_5y": [10.0 * (i + 1) for i in range(n)],
+            "roce_or_roic": [10.0 * (i + 1) for i in range(n)],
+            "quarterly_profit_growth": [10.0 * (i + 1) for i in range(n)],
+        }
+
+    def test_negative_peg_gets_zero_inv_peg(self):
+        # Row 0 has a negative PEG and the WORST other metrics. Pre-fix it would
+        # rank lowest on peg → inv_peg ~ 1.0 → 30 points of value score. After
+        # the fix its inv_peg term is 0, so its score is only the other 70*0.x.
+        df = pd.DataFrame({"peg": [-1.0, 1.0, 2.0, 4.0], **self._other_cols(4)})
+        result = add_garp_score(df).set_index("peg")
+        # Negative-peg row (row 0) has the smallest other metrics → each pct=0.25.
+        # inv_peg must be 0 (NaN'd → fillna(0)), so score = 0 + 70*0.25 = 17.5,
+        # NOT 30*~1.0 + 70*0.25 = ~47.5.
+        assert result.loc[-1.0, "garp_score"] == pytest.approx(17.5, abs=0.01)
+
+    def test_negative_peg_not_top_value_score(self):
+        # A loss-making name with otherwise mediocre metrics must NOT outscore a
+        # genuinely cheap, high-quality name purely because PEG is negative.
+        df = pd.DataFrame(
+            [
+                # loss-maker: negative PEG, weak fundamentals
+                {
+                    "peg": -2.0,
+                    "eps_growth_5y": 10.0,
+                    "sales_growth_5y": 10.0,
+                    "roe_5y": 10.0,
+                    "roce_or_roic": 10.0,
+                    "quarterly_profit_growth": 10.0,
+                },
+                # genuine GARP: low positive PEG, strong fundamentals
+                {
+                    "peg": 0.5,
+                    "eps_growth_5y": 30.0,
+                    "sales_growth_5y": 30.0,
+                    "roe_5y": 30.0,
+                    "roce_or_roic": 30.0,
+                    "quarterly_profit_growth": 30.0,
+                },
+            ]
+        )
+        result = add_garp_score(df).set_index("peg")
+        # Genuine GARP row must score strictly higher than the loss-maker.
+        assert result.loc[0.5, "garp_score"] > result.loc[-2.0, "garp_score"]
+        # And the loss-maker's inv_peg contribution must be 0: with both other
+        # metrics ranking lowest (0.5 each, 2-row), score = 0 + 70*0.5 = 35.0.
+        assert result.loc[-2.0, "garp_score"] == pytest.approx(35.0, abs=0.01)
+
+
 class TestGarpPctRank:
     """Test pct() ranking: for col=[5, 10, 20, 40] (4 rows):
     rank(pct=True) = [0.25, 0.50, 0.75, 1.0]

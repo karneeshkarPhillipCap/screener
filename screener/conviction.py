@@ -57,7 +57,6 @@ from screener.indicators.plugins.ema import ema
 from screener.indicators.plugins.rsi import rsi
 from screener.insiders import (
     _fetch_fmp_insider_one,
-    _fetch_openscreener_one,
     _fmp_api_key,
 )
 from screener.pledge import resolve_pledge_pct
@@ -94,6 +93,19 @@ HISTORY_DAYS = 420
 # Trend needs the 63-day relative-strength lookback plus RSI(14) warm-up.
 TREND_MIN_BARS = 64
 RS_TREND_WINDOW = 63
+
+# Indian quarterly results are published ~45 days after the fiscal period-end,
+# so a shareholding/result row dated "Mar 2024" is not public until ~mid-May.
+# When selecting the point-in-time record for an ``as_of`` we treat a quarter
+# as known only once period-end + this lag has passed.
+PROMOTER_FILING_LAG_DAYS = 45
+
+# Pillars whose loaders return only *latest* aggregates with no per-record
+# date (fundamentals TTM/5yr metrics, the single latest pledge filing) cannot
+# be reconstructed point-in-time. When the requested ``as_of`` is more than
+# this many days before today we skip those pillars rather than silently
+# scoring stale-but-future data into a historical card.
+PIT_STALE_TOLERANCE_DAYS = 7
 
 
 class PillarResult(BaseModel):
@@ -142,6 +154,25 @@ def _skipped(name: str, reason: str) -> PillarResult:
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, float(value)))
+
+
+def _quarter_public_date(label: Any) -> Optional[date]:
+    """Date an Indian quarterly result keyed on *label* (e.g. ``"Mar 2024"``)
+    became public: fiscal period-end + the typical filing lag, or ``None`` if
+    the label is unparseable."""
+    if not label:
+        return None
+    try:
+        period_end = pd.to_datetime(str(label), format="%b %Y") + pd.offsets.MonthEnd(0)
+    except Exception:
+        return None
+    return (period_end + pd.Timedelta(days=PROMOTER_FILING_LAG_DAYS)).date()
+
+
+def _is_pit_stale(as_of: date) -> bool:
+    """True when *as_of* is materially before today, so loaders that can only
+    return *latest* (undated) data would leak future information."""
+    return (date.today() - as_of).days > PIT_STALE_TOLERANCE_DAYS
 
 
 def compose(pillars: list[PillarResult]) -> Optional[float]:
@@ -366,19 +397,68 @@ def _load_smart_money_us(
     )
 
 
-def _load_smart_money_india(
-    symbol: str, *, cache_ttl: float | None, refresh: bool
+def _promoter_pair_as_of(
+    rows: list[dict[str, Any]], as_of: date
 ) -> Optional[dict[str, Any]]:
-    return _fetch_openscreener_one(
-        india_symbol(symbol), cache_ttl=cache_ttl, refresh=refresh
+    """Select the most recent promoter-holding quarter pair whose latest
+    quarter was public by *as_of*, mirroring the latest/prev delta that
+    :func:`screener.insiders._fetch_openscreener_one` returns for *today*."""
+    public = [
+        r
+        for r in rows
+        if isinstance(r, dict)
+        and (pub := _quarter_public_date(r.get("date"))) is not None
+        and pub <= as_of
+    ]
+    if len(public) < 2:
+        return None
+    latest, prev = public[-1], public[-2]
+    p_latest = _num(latest.get("promoters"))
+    p_prev = _num(prev.get("promoters"))
+    if p_latest is None or p_prev is None:
+        return None
+    return {
+        "promoter_pct_latest": p_latest,
+        "promoter_pct_prev": p_prev,
+        "promoter_change": p_latest - p_prev,
+        "latest_quarter": latest.get("date"),
+    }
+
+
+def _load_smart_money_india(
+    symbol: str, as_of: date, *, cache_ttl: float | None, refresh: bool
+) -> Optional[dict[str, Any]]:
+    """Point-in-time promoter holding: fetch the full quarterly history and
+    select the most recent pair public by *as_of* (not today's latest)."""
+    from screener.insiders import _HttpScraper
+
+    try:
+        from openscreener import Stock
+    except ImportError:
+        return None
+    sym = india_symbol(symbol)
+    rows = cached_json_call(
+        "conviction_shareholding",
+        ("shareholding_quarterly", sym),
+        ttl_seconds=cache_ttl,
+        refresh=refresh,
+        fetch=lambda: Stock(sym, scraper=_HttpScraper()).shareholding_quarterly(),
     )
+    if not isinstance(rows, list):
+        return None
+    return _promoter_pair_as_of(rows, as_of)
 
 
 def _smart_money_pillar(
-    symbol: str, market: str, *, cache_ttl: float | None, refresh: bool
+    symbol: str, market: str, as_of: date, *, cache_ttl: float | None, refresh: bool
 ) -> PillarResult:
     name = "smart_money"
     if market == "us":
+        # FMP Form 4 aggregates a fixed window relative to *today* with no
+        # point-in-time slicing, so a historical card would leak future
+        # filings. Skip rather than fabricate a back-dated signal.
+        if _is_pit_stale(as_of):
+            return _skipped(name, f"no point-in-time Form 4 data for {as_of}")
         api_key = _fmp_api_key()
         if not api_key:
             return _skipped(name, "FMP_API_KEY not configured")
@@ -392,11 +472,13 @@ def _smart_money_pillar(
             return _skipped(name, "no Form 4 buy/sell activity in window")
         return _score_smart_money_us(payload)
     try:
-        payload = _load_smart_money_india(symbol, cache_ttl=cache_ttl, refresh=refresh)
+        payload = _load_smart_money_india(
+            symbol, as_of, cache_ttl=cache_ttl, refresh=refresh
+        )
     except Exception as exc:
         return _skipped(name, f"promoter data error: {exc}")
     if not payload:
-        return _skipped(name, "no promoter shareholding data")
+        return _skipped(name, "no promoter shareholding data as of date")
     return _score_smart_money_india(payload)
 
 
@@ -487,8 +569,13 @@ def _load_fundamentals(
 
 
 def _fundamentals_pillar(
-    symbol: str, market: str, *, cache_ttl: float | None, refresh: bool
+    symbol: str, market: str, as_of: date, *, cache_ttl: float | None, refresh: bool
 ) -> PillarResult:
+    # The GARP loaders return only the latest TTM/5yr aggregates with no
+    # per-report date, so they cannot be reconstructed point-in-time. For a
+    # back-dated card that would inject post-as_of fundamentals; skip instead.
+    if _is_pit_stale(as_of):
+        return _skipped("fundamentals", f"no point-in-time fundamentals for {as_of}")
     try:
         row = _load_fundamentals(symbol, market, cache_ttl=cache_ttl, refresh=refresh)
     except Exception as exc:
@@ -513,7 +600,12 @@ def _load_pledge(symbol: str, *, refresh: bool) -> Optional[float]:
     return resolve_pledge_pct(sym, sym, refresh=refresh)
 
 
-def _risk_pillar(symbol: str, *, refresh: bool) -> PillarResult:
+def _risk_pillar(symbol: str, as_of: date, *, refresh: bool) -> PillarResult:
+    # NSE/openscreener pledge resolvers expose only the *latest* filing with no
+    # historical date to slice on, so a past as_of would use today's pledge.
+    # Skip rather than back-date a future disclosure.
+    if _is_pit_stale(as_of):
+        return _skipped("risk", f"no point-in-time pledge data for {as_of}")
     try:
         pledge = _load_pledge(symbol, refresh=refresh)
     except Exception as exc:
@@ -572,13 +664,15 @@ def build_conviction_card(
         display_symbol = india_symbol(symbol) if market == "india" else yf_sym
         pillars.append(score_volume(display_symbol, bars, as_of, delivery=delivery))
     pillars.append(
-        _smart_money_pillar(symbol, market, cache_ttl=cache_ttl, refresh=refresh)
+        _smart_money_pillar(symbol, market, as_of, cache_ttl=cache_ttl, refresh=refresh)
     )
     pillars.append(
-        _fundamentals_pillar(symbol, market, cache_ttl=cache_ttl, refresh=refresh)
+        _fundamentals_pillar(
+            symbol, market, as_of, cache_ttl=cache_ttl, refresh=refresh
+        )
     )
     if market == "india":
-        pillars.append(_risk_pillar(symbol, refresh=refresh))
+        pillars.append(_risk_pillar(symbol, as_of, refresh=refresh))
 
     return ConvictionCard(
         symbol=symbol,

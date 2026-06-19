@@ -83,11 +83,18 @@ def test_flat_series_zero_std_and_collapsed_bands():
     np.testing.assert_allclose(upper[9:], middle[9:], atol=1e-12)
 
 
-def test_flat_series_rsi_is_100():
-    """Documented quirk: a flat market has zero downside → RSI pinned at 100."""
+def test_flat_series_rsi_warmup_nan_then_100():
+    """Flat market: the n-1 warm-up bars are NaN (RMA warm-up convention);
+    post-warm-up bars have zero downside → RSI pinned at 100.
+
+    (Previously the whole series was a spurious 100 because the NaN warm-up
+    region was masked by rs=inf — now the warm-up is correctly NaN.)
+    """
+    n = 14
     x = np.full(30, 5.0)
-    got = rsi(x, 14)
-    assert np.all(got == 100.0)
+    got = rsi(x, n)
+    assert np.isnan(got[: n - 1]).all()
+    assert np.all(got[n - 1 :] == 100.0)
 
 
 # --------------------------------------------------------------------------- #

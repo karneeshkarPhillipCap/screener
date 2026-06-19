@@ -73,8 +73,9 @@ def _alpha_beta(daily: pd.Series, bench_daily: pd.Series) -> tuple[float, float]
     if x.std() == 0:
         return 0.0, 0.0
     slope, intercept = np.polyfit(x, y, 1)
-    # annualize alpha (intercept is per-day)
-    return float(intercept * TRADING_DAYS_PER_YEAR), float(slope)
+    # annualize alpha geometrically (intercept is per-day): (1+a)^252 - 1.
+    # Matches empyrical/quantstats; arithmetic intercept*252 ignored compounding.
+    return float((1.0 + intercept) ** TRADING_DAYS_PER_YEAR - 1.0), float(slope)
 
 
 def _exposure(
@@ -96,10 +97,12 @@ def _sortino(daily: pd.Series, rf: float = 0.0) -> float:
     if daily.empty:
         return 0.0
     excess = daily - rf / TRADING_DAYS_PER_YEAR
-    downside = excess[excess < 0]
-    if downside.empty or downside.std(ddof=0) == 0:
+    # Canonical target-downside-deviation: RMS of min(excess, 0) over ALL N
+    # periods (target = per-period rf). Matches empyrical.sortino_ratio.
+    downside_dev = float(np.sqrt(np.mean(np.minimum(excess, 0.0) ** 2)))
+    if downside_dev == 0:
         return 0.0
-    return float(excess.mean() / downside.std(ddof=0) * np.sqrt(TRADING_DAYS_PER_YEAR))
+    return float(excess.mean() / downside_dev * np.sqrt(TRADING_DAYS_PER_YEAR))
 
 
 def _calmar(equity: pd.Series) -> float:

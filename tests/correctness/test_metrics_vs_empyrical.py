@@ -20,13 +20,15 @@ comments for the derivation):
    `len(returns)/252`.  The previous `len(equity)/252` overstated the horizon by
    one bar and understated CAGR; screener and empyrical now agree to <1e-9.
 
-4. SORTINO — screener divides by std(downside_only, ddof=0); empyrical uses
-   RMS(min(r, 0)) over ALL N observations.  Not a scalar factor → values are
-   genuinely different.  Classified: NON-STANDARD DESIGN CHOICE.
+4. SORTINO — FIXED.  Screener now uses the canonical target-downside-deviation
+   RMS(min(excess, 0)) over ALL N observations, the same denominator empyrical
+   uses.  screener and empyrical now agree to <1e-9.  (Previously the screener
+   divided by std(downside_only, ddof=0), which inflated Sortino.)
 
-5. ALPHA ANNUALIZATION — screener: intercept * 252 (arithmetic).
-   empyrical: geometric ((1+daily_alpha)^252 - 1).  Values diverge.
-   Classified: NON-STANDARD DESIGN CHOICE.
+5. ALPHA ANNUALIZATION — FIXED.  Screener now annualizes geometrically
+   ((1+daily_intercept)^252 - 1), matching empyrical/quantstats.  The daily
+   intercept still matches scipy.stats.linregress.  (Previously intercept*252,
+   arithmetic, which overstated alpha by ignoring compounding.)
 
 6. BETA and MAX-DRAWDOWN agree with empyrical to floating-point precision.
 """
@@ -203,42 +205,34 @@ def test_cagr_matches_empyrical_after_off_by_one_fix(
 
 
 # ---------------------------------------------------------------------------
-# 4. Sortino divergence (non-standard design choice)
+# 4. Sortino matches empyrical (canonical target-downside-deviation)
 # ---------------------------------------------------------------------------
 
 
-def test_sortino_screener_vs_empyrical_differ(sample_returns: pd.Series):
-    """Document Sortino divergence: the two functions use different downside denominators.
+def test_sortino_matches_empyrical(sample_returns: pd.Series):
+    """_sortino now AGREES with empyrical.sortino_ratio to <1e-9.
 
-    Screener denominator: std(r[r < 0], ddof=0)  — std of the negative subset only.
-    Empyrical denominator: sqrt(mean(min(r, 0)^2)) — RMS over ALL observations.
+    Both use the canonical target-downside-deviation denominator:
+        sqrt(mean(min(r, 0)^2)) — RMS over ALL N observations (target = 0).
 
-    These are NOT related by a scalar factor.  The screener value is typically
-    LARGER because its denominator ignores the zeros implicitly zeroed out by
-    empyrical's RMS and uses a sample of only the negative returns.
-
-    Classification: NON-STANDARD DESIGN CHOICE (neither formula is universally
-    agreed; the screener's variant is closer to the Sortino (1994) paper but
-    still non-standard in that it uses population std of the downside subset).
+    (Previously the screener divided by std(r[r < 0], ddof=0) — the std of the
+    negative subset only — which inflated Sortino.  That non-standard choice is
+    fixed; the screener and empyrical now match the same oracle.)
     """
     screener = _sortino(sample_returns)
     emp = empyrical.sortino_ratio(sample_returns, period="daily")
 
-    # Values must differ by more than a rounding error.
-    assert abs(screener - emp) > 0.01, (
-        f"Expected Sortino divergence > 0.01 but got {abs(screener - emp):.4f}"
+    assert abs(screener - emp) < 1e-9, (
+        f"screener Sortino {screener} != empyrical {emp} "
+        f"(diff {abs(screener - emp):.2e})"
     )
 
-    # Screener's formula: std of the NEGATIVE subset only (ddof=0).
-    downside = sample_returns[sample_returns < 0]
-    hand_denominator = float(downside.std(ddof=0))
-    hand_sortino = float(sample_returns.mean() / hand_denominator * math.sqrt(252))
-    assert abs(screener - hand_sortino) < 1e-10
-
-    # Empyrical's formula: RMS of min(r, 0) over all N.
+    # Independent hand oracle: RMS of min(r, 0) over all N (target = 0).
     rms_denominator = float(np.sqrt(np.mean(np.minimum(sample_returns.values, 0) ** 2)))
-    hand_emp_sortino = float(sample_returns.mean() / rms_denominator * math.sqrt(252))
-    assert abs(emp - hand_emp_sortino) < 1e-6
+    hand_sortino = float(sample_returns.mean() / rms_denominator * math.sqrt(252))
+    assert abs(screener - hand_sortino) < 1e-10, (
+        f"screener Sortino {screener} != RMS-downside formula {hand_sortino}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -266,18 +260,14 @@ def test_beta_matches_empyrical_and_scipy(
     )
 
 
-def test_alpha_screener_is_arithmetic_annualization(
+def test_alpha_screener_is_geometric_annualization(
     sample_returns: pd.Series, sample_bench: pd.Series
 ):
-    """Screener alpha = OLS daily intercept * 252 (arithmetic annualization).
+    """Screener alpha = (1 + OLS daily intercept)^252 - 1 (geometric annualization).
 
-    Classification: NON-STANDARD DESIGN CHOICE.  The standard (empyrical,
-    quantstats) convention is geometric: (1 + daily_intercept)^252 - 1.
-    Arithmetic annualization overestimates at higher intercept values because
-    it ignores compounding.  The screener is self-consistent (it documents
-    'intercept is per-day' in the code) but deviates from empyrical.
-
-    The daily intercept itself must match scipy.stats.linregress exactly.
+    This matches the standard empyrical/quantstats convention.  (Previously the
+    screener used arithmetic intercept*252, which overstated alpha by ignoring
+    compounding.)  The daily intercept itself must still match scipy.stats.linregress.
     """
     screener_alpha, _ = _alpha_beta(sample_returns, sample_bench)
     emp_alpha = empyrical.alpha(sample_returns, sample_bench, period="daily")
@@ -285,21 +275,15 @@ def test_alpha_screener_is_arithmetic_annualization(
 
     daily_intercept = scipy_result.intercept
 
-    # Screener alpha = intercept * 252 (arithmetic)
-    assert abs(screener_alpha - daily_intercept * 252) < 1e-10, (
-        f"screener alpha {screener_alpha} != scipy_intercept * 252 "
-        f"= {daily_intercept * 252}"
-    )
-
-    # Empyrical uses geometric annualization → different value.
+    # Screener alpha = geometric annualization of the daily intercept.
     geometric_alpha = (1.0 + daily_intercept) ** 252 - 1.0
-    assert abs(emp_alpha - geometric_alpha) < 1e-6, (
-        f"empyrical alpha {emp_alpha} != geometric formula {geometric_alpha}"
+    assert abs(screener_alpha - geometric_alpha) < 1e-10, (
+        f"screener alpha {screener_alpha} != geometric formula {geometric_alpha}"
     )
 
-    # Arithmetic != geometric (unless intercept is exactly 0).
-    assert abs(screener_alpha - emp_alpha) > 1e-5, (
-        "Expected arithmetic vs geometric alpha to differ visibly"
+    # And it now agrees with empyrical's geometric alpha to oracle precision.
+    assert abs(screener_alpha - emp_alpha) < 1e-6, (
+        f"screener alpha {screener_alpha} != empyrical {emp_alpha}"
     )
 
 

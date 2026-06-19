@@ -233,6 +233,80 @@ def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def apply_splits_only_adjustment(
+    bars_dict: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    """Back-adjust OHLC + per-share dividends for splits in the splits_only regime.
+
+    For each frame carrying a ``split_factor`` column (emitted by
+    ``_normalize_frame`` from yfinance ``Stock Splits``), historical bars are
+    divided by the factor for open/high/low/close and the per-share
+    ``dividend`` column, and volume is multiplied by the factor — so a flat
+    series across a real 2:1 split stays flat instead of showing a phantom
+    -50% step. Frames whose factors are all ``1.0`` are returned untouched
+    (fast path).
+
+    Frames lacking a ``split_factor`` are passed through unchanged here; the
+    FMP-reconstruction / warning for those lives at the fetch sites.
+    """
+    out: dict[str, pd.DataFrame] = {}
+    for ticker, frame in bars_dict.items():
+        if frame is None or frame.empty or "split_factor" not in frame.columns:
+            out[ticker] = frame
+            continue
+        factor = frame["split_factor"].astype(float)
+        # Fast-path: nothing to do when no split is present.
+        if bool((factor == 1.0).all()):
+            out[ticker] = frame
+            continue
+        adjusted = frame.copy()
+        for col in ("open", "high", "low", "close", "dividend"):
+            if col in adjusted.columns:
+                adjusted[col] = adjusted[col].astype(float) / factor
+        if "volume" in adjusted.columns:
+            adjusted["volume"] = adjusted["volume"].astype(float) * factor
+        out[ticker] = adjusted
+    return out
+
+
+def warn_unadjustable_fmp_frames(
+    bars_dict: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    """Warn (once per call) about FMP-served frames that cannot be split-adjusted.
+
+    FMP frames carry ``adj_close`` but no ``Stock Splits`` column, so they have
+    no ``split_factor``. We deliberately do **not** reconstruct one from the
+    ``adj_close``/``close`` ratio: ``adj_close`` is back-adjusted for *both*
+    splits and dividends, so the ratio cannot separate the two — a pure dividend
+    would be mis-read as a split and bake dividend return into the price series
+    (corrupting the splits_only regime and partially double-counting dividends).
+
+    Instead these frames pass through unadjusted and we emit a clear warning so
+    the limitation is visible rather than silently producing inconsistent
+    results. yfinance-served tickers (the default path) carry ``split_factor``
+    and are still adjusted normally.
+    """
+    unadjusted = [
+        ticker
+        for ticker, frame in bars_dict.items()
+        if frame is not None and not frame.empty and "split_factor" not in frame.columns
+    ]
+    if unadjusted:
+        from screener.logging_config import get_logger
+
+        get_logger(__name__).warning(
+            "fmp_unadjusted_in_splits_only",
+            reason=(
+                "FMP frames lack a Stock Splits column; splits cannot be "
+                "reliably recovered from adj_close (splits+dividends are "
+                "conflated), so these tickers are left split-unadjusted"
+            ),
+            tickers=unadjusted[:20],
+            count=len(unadjusted),
+        )
+    return bars_dict
+
+
 def _merge_cached(existing: Optional[pd.DataFrame], new: pd.DataFrame) -> pd.DataFrame:
     if existing is None or existing.empty:
         merged = new.copy()
