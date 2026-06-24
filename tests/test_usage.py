@@ -72,7 +72,9 @@ def test_usage_models_and_env_helpers(tmp_path, monkeypatch):
     }
 
     monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
-    monkeypatch.setattr(usage, "_load_env_file", lambda: {"TURSO_DATABASE_URL": "file-url"})
+    monkeypatch.setattr(
+        usage, "_load_env_file", lambda: {"TURSO_DATABASE_URL": "file-url"}
+    )
     assert usage._env_value("TURSO_DATABASE_URL") == "file-url"
 
     monkeypatch.setenv("TURSO_DATABASE_URL", "libsql://remote")

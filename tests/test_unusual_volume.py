@@ -205,9 +205,7 @@ def test_filter_helpers_cover_fetch_and_market_cap_branches(monkeypatch):
         {"date": pd.date_range("2026-01-01", periods=5), "volume": [1, 2, 3, 4, 5]}
     )
     assert (
-        passes_volume_floor(
-            short_with_date, min_avg_volume=0, as_of=date(2026, 1, 5)
-        )
+        passes_volume_floor(short_with_date, min_avg_volume=0, as_of=date(2026, 1, 5))
         is False
     )
 
@@ -561,14 +559,13 @@ def test_service_models_and_small_helpers():
         composite=0.5,
         flags=[],
     )
-    standalone = uv_service.standalone_buildup_event(
-        score, one_bar, date(2026, 1, 1)
-    )
+    standalone = uv_service.standalone_buildup_event(score, one_bar, date(2026, 1, 1))
     assert standalone is not None
     assert standalone.pct_change == 0.0
-    assert uv_service.standalone_buildup_event(
-        score, pd.DataFrame(), date(2026, 1, 1)
-    ) is None
+    assert (
+        uv_service.standalone_buildup_event(score, pd.DataFrame(), date(2026, 1, 1))
+        is None
+    )
 
 
 def test_service_private_overlay_helpers_cover_fallbacks(monkeypatch):
@@ -589,11 +586,15 @@ def test_service_private_overlay_helpers_cover_fallbacks(monkeypatch):
         buildup_window=20,
         buildup_min_score=0.5,
     )
-    assert uv_service._overlay_india_delivery(req_us, {"AAA": make_bars()}, [], console).empty
+    assert uv_service._overlay_india_delivery(
+        req_us, {"AAA": make_bars()}, [], console
+    ).empty
     uv_service._overlay_india_microstructure(req_us, [], console)
 
     req_india = req_us.model_copy(update={"market": "india"})
-    monkeypatch.setattr(uv_service, "load_delivery_panel", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(
+        uv_service, "load_delivery_panel", lambda *args, **kwargs: pd.DataFrame()
+    )
     assert uv_service._overlay_india_delivery(
         req_india, {"NSE:AAA": make_bars()}, [], console
     ).empty
@@ -616,7 +617,9 @@ def test_service_private_overlay_helpers_cover_fallbacks(monkeypatch):
     missing_score = extra_score.model_copy(update={"symbol": "MISSING"})
     empty_score = extra_score.model_copy(update={"symbol": "EMPTY"})
 
-    monkeypatch.setattr(uv_service, "compute_buildup_score", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        uv_service, "compute_buildup_score", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         uv_service,
         "scan_buildups",
@@ -671,7 +674,9 @@ def test_service_private_overlay_helpers_cover_fallbacks(monkeypatch):
 def test_live_snapshot_date_success_and_fallback(monkeypatch):
     import screener.operator.fetch as operator_fetch
 
-    monkeypatch.setattr(operator_fetch, "latest_trading_day", lambda today: date(2026, 4, 23))
+    monkeypatch.setattr(
+        operator_fetch, "latest_trading_day", lambda today: date(2026, 4, 23)
+    )
     assert uv_service._live_nse_snapshot_date() == date(2026, 4, 23)
 
     monkeypatch.setattr(
@@ -731,9 +736,7 @@ def test_buildup_leaf_scoring_branches():
 
     assert uv_buildup._score_higher_lows(short, 20) == (None, None)
     assert uv_buildup._score_higher_lows(bars.assign(low=0.0), 20) == (None, None)
-    flat_score, flat_slope = uv_buildup._score_higher_lows(
-        bars.assign(low=100.0), 20
-    )
+    flat_score, flat_slope = uv_buildup._score_higher_lows(bars.assign(low=100.0), 20)
     assert flat_score == 0.0
     assert flat_slope == 0.0
     higher_score, higher_slope = uv_buildup._score_higher_lows(bars, 20)
@@ -802,9 +805,10 @@ def test_buildup_compute_and_scan_paths():
 
     assert uv_buildup.compute_buildup_score("AAA", None, as_of) is None
     assert uv_buildup.compute_buildup_score("AAA", pd.DataFrame(), as_of) is None
-    assert uv_buildup.compute_buildup_score(
-        "AAA", pd.DataFrame({"close": [1.0]}), as_of
-    ) is None
+    assert (
+        uv_buildup.compute_buildup_score("AAA", pd.DataFrame({"close": [1.0]}), as_of)
+        is None
+    )
     assert uv_buildup.compute_buildup_score("AAA", bars.tail(10), as_of) is None
 
     original = (
@@ -896,7 +900,9 @@ def test_fetch_bars_maps_yfinance_symbols_and_handles_fetch_errors(monkeypatch):
             assert symbols == ["AAA.NS", "BBB.NS"]
             return {"AAA.NS": bars, "BBB.NS": pd.DataFrame()}
 
-    monkeypatch.setattr(uv_service, "build_price_fetcher", lambda refresh=False: Fetcher())
+    monkeypatch.setattr(
+        uv_service, "build_price_fetcher", lambda refresh=False: Fetcher()
+    )
     monkeypatch.setattr(uv_service, "tv_to_yf", lambda ticker, market: f"{ticker}.NS")
     console = Console(record=True)
 
@@ -913,9 +919,7 @@ def test_fetch_bars_maps_yfinance_symbols_and_handles_fetch_errors(monkeypatch):
     monkeypatch.setattr(
         uv_service, "build_price_fetcher", lambda refresh=False: FailingFetcher()
     )
-    assert (
-        uv_service.fetch_bars(["AAA"], "us", date(2026, 1, 31), console) == {}
-    )
+    assert uv_service.fetch_bars(["AAA"], "us", date(2026, 1, 31), console) == {}
 
 
 def test_service_delivery_buildup_microstructure_and_scan(monkeypatch):
@@ -941,7 +945,9 @@ def test_service_delivery_buildup_microstructure_and_scan(monkeypatch):
     monkeypatch.setattr(uv_service, "fetch_fno_ban_list", lambda: {"BANNED"})
     monkeypatch.setattr(uv_service, "passes_volume_floor", lambda *args, **kwargs: True)
     monkeypatch.setattr(uv_service, "detect_market", lambda *args, **kwargs: [event])
-    monkeypatch.setattr(uv_service, "load_delivery_panel", lambda *args, **kwargs: panel)
+    monkeypatch.setattr(
+        uv_service, "load_delivery_panel", lambda *args, **kwargs: panel
+    )
     monkeypatch.setattr(uv_service, "overlay_events", lambda events, panel: None)
     monkeypatch.setattr(
         uv_service,
@@ -965,10 +971,22 @@ def test_service_delivery_buildup_microstructure_and_scan(monkeypatch):
         ),
     )
     monkeypatch.setattr(uv_service, "scan_buildups", lambda *args, **kwargs: [])
-    monkeypatch.setattr(uv_service, "fetch_sector_map", lambda *args, **kwargs: {"AAA": "IT"})
-    monkeypatch.setattr(uv_service, "attach_sector", lambda events, sectors: [setattr(e, "sector", sectors.get(e.symbol)) for e in events])
+    monkeypatch.setattr(
+        uv_service, "fetch_sector_map", lambda *args, **kwargs: {"AAA": "IT"}
+    )
+    monkeypatch.setattr(
+        uv_service,
+        "attach_sector",
+        lambda events, sectors: [
+            setattr(e, "sector", sectors.get(e.symbol)) for e in events
+        ],
+    )
     monkeypatch.setattr(uv_service, "passes_market_cap", lambda market_cap, floor: True)
-    monkeypatch.setattr(uv_service, "deep_enrich_india", lambda events: [setattr(e, "notes", "deep") for e in events])
+    monkeypatch.setattr(
+        uv_service,
+        "deep_enrich_india",
+        lambda events: [setattr(e, "notes", "deep") for e in events],
+    )
     monkeypatch.setattr(uv_service, "_live_nse_snapshot_date", lambda: as_of)
 
     option_mod = types.SimpleNamespace(
@@ -1049,7 +1067,9 @@ def test_service_scan_empty_paths_and_overlay_failures(monkeypatch):
 
     bars = make_bars(n=60, seed=23)
     monkeypatch.setattr(uv_service, "fetch_bars", lambda *args, **kwargs: {"AAA": bars})
-    monkeypatch.setattr(uv_service, "passes_volume_floor", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        uv_service, "passes_volume_floor", lambda *args, **kwargs: False
+    )
     no_liquid = uv_service.run_unusual_volume_scan(req, console)
     assert no_liquid.fetched_count == 1
     assert no_liquid.liquid_count == 0
@@ -1073,7 +1093,9 @@ def test_service_scan_empty_paths_and_overlay_failures(monkeypatch):
     )
     monkeypatch.setattr(uv_service, "fetch_sector_map", lambda *args, **kwargs: {})
     monkeypatch.setattr(uv_service, "passes_market_cap", lambda *args, **kwargs: True)
-    monkeypatch.setattr(uv_service, "_live_nse_snapshot_date", lambda: date(2026, 4, 25))
+    monkeypatch.setattr(
+        uv_service, "_live_nse_snapshot_date", lambda: date(2026, 4, 25)
+    )
     monkeypatch.setitem(
         sys.modules,
         "screener.unusual_volume.option_chain",
@@ -1205,7 +1227,9 @@ def test_deep_enrich_india_fetch_variants_and_failures(monkeypatch):
                 )
             }
 
-    monkeypatch.setitem(sys.modules, "openscreener", types.SimpleNamespace(Stock=FetchNoArgs))
+    monkeypatch.setitem(
+        sys.modules, "openscreener", types.SimpleNamespace(Stock=FetchNoArgs)
+    )
     uv_enrich.deep_enrich_india([ev])
     assert ev.notes == "note; promoter holding 51.0%"
 
@@ -1215,7 +1239,9 @@ def test_deep_enrich_india_fetch_variants_and_failures(monkeypatch):
                 {"Mar 2026": ["55.5"]}, index=["Promoters"]
             )
 
-    monkeypatch.setitem(sys.modules, "openscreener", types.SimpleNamespace(Stock=PropertyOnly))
+    monkeypatch.setitem(
+        sys.modules, "openscreener", types.SimpleNamespace(Stock=PropertyOnly)
+    )
     uv_enrich.deep_enrich_india([existing])
     assert existing.notes == "existing; promoter holding 55.5%"
 
@@ -1226,7 +1252,9 @@ def test_deep_enrich_india_fetch_variants_and_failures(monkeypatch):
     untouched = _event_for_output(
         "CCC", date(2026, 1, 1), direction="BUYING", strength="HIGH"
     )
-    monkeypatch.setitem(sys.modules, "openscreener", types.SimpleNamespace(Stock=RaisingStock))
+    monkeypatch.setitem(
+        sys.modules, "openscreener", types.SimpleNamespace(Stock=RaisingStock)
+    )
     uv_enrich.deep_enrich_india([untouched])
     assert untouched.notes == "note"
 
@@ -1282,7 +1310,9 @@ def test_deep_enrich_india_empty_and_promoter_failure_paths(monkeypatch):
 
     monkeypatch.setattr(uv_enrich, "_extract_promoter_pct", fake_extract)
 
-    uv_enrich.deep_enrich_india([empty_event, none_event, callable_event, raising_event])
+    uv_enrich.deep_enrich_india(
+        [empty_event, none_event, callable_event, raising_event]
+    )
 
     assert empty_event.notes == "note"
     assert none_event.notes == "note"
@@ -1296,13 +1326,22 @@ def test_enrich_extract_promoter_pct_shapes():
     assert uv_enrich._extract_promoter_pct(["bad"]) is None
     assert uv_enrich._extract_promoter_pct([{"Promoters": "52.25%"}]) == 52.25
     assert uv_enrich._extract_promoter_pct([{"public": "10"}]) is None
-    assert uv_enrich._extract_promoter_pct(
-        pd.DataFrame({"Mar 2026": [pd.NA]}, index=["Promoters"])
-    ) is None
-    assert uv_enrich._extract_promoter_pct(
-        pd.DataFrame({"Mar 2026": ["bad"]}, index=["Promoters"])
-    ) is None
-    assert uv_enrich._extract_promoter_pct(pd.DataFrame({"x": [1]}, index=["Public"])) is None
+    assert (
+        uv_enrich._extract_promoter_pct(
+            pd.DataFrame({"Mar 2026": [pd.NA]}, index=["Promoters"])
+        )
+        is None
+    )
+    assert (
+        uv_enrich._extract_promoter_pct(
+            pd.DataFrame({"Mar 2026": ["bad"]}, index=["Promoters"])
+        )
+        is None
+    )
+    assert (
+        uv_enrich._extract_promoter_pct(pd.DataFrame({"x": [1]}, index=["Public"]))
+        is None
+    )
 
 
 def _event_for_output(

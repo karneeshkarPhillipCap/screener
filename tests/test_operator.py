@@ -49,7 +49,11 @@ def test_latest_trading_day_skips_empty_bhavcopy(monkeypatch):
 
     def fake_read(d: date) -> pd.DataFrame:
         calls.append(d)
-        return pd.DataFrame() if len(calls) == 1 else pd.DataFrame({"DATE1": ["05-Jan-2024"]})
+        return (
+            pd.DataFrame()
+            if len(calls) == 1
+            else pd.DataFrame({"DATE1": ["05-Jan-2024"]})
+        )
 
     monkeypatch.setattr(fetch, "is_trading_day", lambda d: True)
     monkeypatch.setattr(fetch, "_read_cash_bhavcopy_raw", fake_read)
@@ -98,14 +102,18 @@ def test_read_cash_bhavcopy_downloads_when_cache_missing(tmp_path, monkeypatch):
         "jugaad_data.nse",
         types.SimpleNamespace(NSEArchives=FakeArchives),
     )
-    monkeypatch.setattr(fetch, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn())
+    monkeypatch.setattr(
+        fetch, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn()
+    )
 
     out = fetch._read_cash_bhavcopy_raw(d)
 
     assert out["SYMBOL"].tolist() == ["AAA"]
 
 
-def test_read_cash_bhavcopy_raises_when_download_does_not_create_file(tmp_path, monkeypatch):
+def test_read_cash_bhavcopy_raises_when_download_does_not_create_file(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(fetch, "CACHE_ROOT", tmp_path)
 
     class FakeArchives:
@@ -117,7 +125,9 @@ def test_read_cash_bhavcopy_raises_when_download_does_not_create_file(tmp_path, 
         "jugaad_data.nse",
         types.SimpleNamespace(NSEArchives=FakeArchives),
     )
-    monkeypatch.setattr(fetch, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn())
+    monkeypatch.setattr(
+        fetch, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn()
+    )
 
     with pytest.raises(FileNotFoundError):
         fetch._read_cash_bhavcopy_raw(date(2024, 1, 5))
@@ -180,7 +190,9 @@ def test_fetch_fo_bhavcopy_downloads_zip(tmp_path, monkeypatch):
         "jugaad_data.nse",
         types.SimpleNamespace(NSEArchives=FakeArchives),
     )
-    monkeypatch.setattr(fetch, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn())
+    monkeypatch.setattr(
+        fetch, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn()
+    )
 
     out = fetch.fetch_fo_bhavcopy(d)
 
@@ -208,7 +220,9 @@ def test_fetch_fo_bhavcopy_reports_bad_response(tmp_path, monkeypatch):
         "jugaad_data.nse",
         types.SimpleNamespace(NSEArchives=FakeArchives),
     )
-    monkeypatch.setattr(fetch, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn())
+    monkeypatch.setattr(
+        fetch, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn()
+    )
 
     with pytest.raises(RuntimeError, match="HTTP 404"):
         fetch.fetch_fo_bhavcopy(date(2024, 1, 5))
@@ -367,7 +381,9 @@ def test_process_build_dataset_computes_derived_columns(monkeypatch):
         return trailing.pop(0)
 
     monkeypatch.setattr(process, "latest_trading_day", fake_latest)
-    monkeypatch.setattr(process, "combined_universe", lambda d, mode: (["AAA", "BBB"], {"AAA"}))
+    monkeypatch.setattr(
+        process, "combined_universe", lambda d, mode: (["AAA", "BBB"], {"AAA"})
+    )
     monkeypatch.setattr(
         process,
         "fetch_cash_bhavcopy",
@@ -394,9 +410,17 @@ def test_process_build_dataset_computes_derived_columns(monkeypatch):
         )
 
     monkeypatch.setattr(process, "fetch_fo_bhavcopy", fake_fo)
-    monkeypatch.setattr(process, "fifty_two_week_hl", lambda symbols, d: pd.DataFrame(
-        {"SYMBOL": list(symbols), "_52W_High": [120.0, 60.0], "_52W_Low": [80.0, 40.0]}
-    ))
+    monkeypatch.setattr(
+        process,
+        "fifty_two_week_hl",
+        lambda symbols, d: pd.DataFrame(
+            {
+                "SYMBOL": list(symbols),
+                "_52W_High": [120.0, 60.0],
+                "_52W_Low": [80.0, 40.0],
+            }
+        ),
+    )
 
     out, actual = process.build_dataset(as_of, universe_mode="fo")
 
@@ -468,7 +492,9 @@ def test_operator_cli_writes_summary(monkeypatch, tmp_path):
     )
     out_path = tmp_path / "out.csv"
 
-    monkeypatch.setattr(cli, "build_dataset", lambda as_of, universe_mode: (df, date(2024, 1, 5)))
+    monkeypatch.setattr(
+        cli, "build_dataset", lambda as_of, universe_mode: (df, date(2024, 1, 5))
+    )
 
     result = CliRunner().invoke(
         cli.operator_scan,

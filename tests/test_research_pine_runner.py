@@ -42,7 +42,10 @@ def test_fetch_ohlcv_refresh_uses_new_fetcher_and_handles_empty(monkeypatch):
     monkeypatch.setattr(data, "build_price_fetcher", lambda refresh=False: Fetcher())
     monkeypatch.setattr(data, "tv_to_yf", lambda ticker, market: f"{ticker}.NS")
 
-    assert data.fetch_ohlcv("AAA", date(2024, 1, 1), date(2024, 1, 2), "india", True) is None
+    assert (
+        data.fetch_ohlcv("AAA", date(2024, 1, 1), date(2024, 1, 2), "india", True)
+        is None
+    )
 
 
 def test_load_universe_reads_tradingview_names(monkeypatch):
@@ -114,7 +117,9 @@ def test_run_market_aggregates_successes_errors_and_benchmark(monkeypatch):
         if ticker == "SPY":
             return pd.DataFrame(
                 {
-                    "date": pd.date_range(date.today() - pd.Timedelta(days=10), periods=3),
+                    "date": pd.date_range(
+                        date.today() - pd.Timedelta(days=10), periods=3
+                    ),
                     "adj_close": [100.0, 105.0, 110.0],
                     "close": [100.0, 105.0, 110.0],
                 }
@@ -237,7 +242,9 @@ def test_cli_main_runs_market_and_writes_json(monkeypatch, tmp_path):
     )
     calls: list[tuple[str, object]] = []
     monkeypatch.setattr(cli, "run_market", lambda **kwargs: result)
-    monkeypatch.setattr(cli, "print_market_table", lambda value: calls.append(("print", value)))
+    monkeypatch.setattr(
+        cli, "print_market_table", lambda value: calls.append(("print", value))
+    )
     monkeypatch.setattr(
         cli,
         "write_trades_json",
@@ -247,7 +254,17 @@ def test_cli_main_runs_market_and_writes_json(monkeypatch, tmp_path):
     path = tmp_path / "out.json"
     res = CliRunner().invoke(
         cli.main,
-        ["--market", "us", "--years", "2", "--limit", "5", "--refresh", "--trades-json", str(path)],
+        [
+            "--market",
+            "us",
+            "--years",
+            "2",
+            "--limit",
+            "5",
+            "--refresh",
+            "--trades-json",
+            str(path),
+        ],
     )
 
     assert res.exit_code == 0, res.output
@@ -264,7 +281,9 @@ def _bars(n: int) -> pd.DataFrame:
     )
 
 
-def _trade(entry_idx: int, exit_idx: int, entry_px: float, exit_px: float, entry_date: str) -> Trade:
+def _trade(
+    entry_idx: int, exit_idx: int, entry_px: float, exit_px: float, entry_date: str
+) -> Trade:
     return Trade(
         entry_idx=entry_idx,
         exit_idx=exit_idx,

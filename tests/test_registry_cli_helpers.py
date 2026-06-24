@@ -165,7 +165,9 @@ def test_garp_pipeline_outputs_csv_or_rich_results(monkeypatch):
 
     monkeypatch.setattr(garp, "parse_ttl", lambda raw, default: 321)
     monkeypatch.setattr(garp, "run_garp_screen", fake_run)
-    monkeypatch.setattr(garp, "print_csv", lambda results: calls.append(("csv", results)))
+    monkeypatch.setattr(
+        garp, "print_csv", lambda results: calls.append(("csv", results))
+    )
     monkeypatch.setattr(
         garp,
         "print_garp_results",

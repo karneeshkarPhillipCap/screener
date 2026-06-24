@@ -153,7 +153,9 @@ def test_print_specialized_result_tables(capsys):
     )
 
     display.print_garp_results(garp_df, "india")
-    display.print_insider_results(india_insider, "india", universe_size=200, match_count=1)
+    display.print_insider_results(
+        india_insider, "india", universe_size=200, match_count=1
+    )
     display.print_insider_results(us_insider, "us", universe_size=200, match_count=1)
     display.print_institutional_results(institutional)
 
@@ -264,6 +266,8 @@ def test_enrich_fundamentals_success_and_fetch_failure(monkeypatch):
         def batch(symbols: list[str]) -> object:
             raise RuntimeError("offline")
 
-    monkeypatch.setitem(sys.modules, "openscreener", types.SimpleNamespace(Stock=FailingStock))
+    monkeypatch.setitem(
+        sys.modules, "openscreener", types.SimpleNamespace(Stock=FailingStock)
+    )
     original = pd.DataFrame({"name": ["AAA"]})
     assert enrich.enrich_fundamentals(original, "india") is original
