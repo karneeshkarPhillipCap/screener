@@ -7,6 +7,7 @@ import numpy as np
 
 from screener.strategies.spec import PrepareCtx, strategy
 
+
 def _prepare_dual_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     benchmark_bars = ctx.price_panel.get(ctx.cfg.benchmark, pd.DataFrame())
     if benchmark_bars is None or benchmark_bars.empty:
@@ -23,21 +24,23 @@ def _prepare_dual_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             continue
         df = bars.copy().sort_index()
         close = df["close"].astype(float)
-        
+
         # 90-day ROC
-        roc_90 = (close / close.shift(90) - 1.0)
-        
+        roc_90 = close / close.shift(90) - 1.0
+
         # Align benchmark regime
         regime = bench_regime.reindex(df.index).fillna(False)
-        
+
         # Entry score: ROC 90 if positive and benchmark is in bull regime
         df["dual_momentum_score"] = np.where(regime & (roc_90 > 0), roc_90, 0.0)
         prepared[symbol] = df
 
     return prepared
 
+
 def _dual_momentum_lookback() -> int:
     return 200
+
 
 @strategy(
     "dual_momentum",

@@ -22,21 +22,21 @@ def _prepare_volatility_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         if bars is None or bars.empty:
             prepared[symbol] = bars
             continue
-            
+
         df = bars.copy().sort_index()
         close = df["close"].astype(float)
-        
-        roc_90 = (close / close.shift(90) - 1.0)
+
+        roc_90 = close / close.shift(90) - 1.0
         daily_returns = close.pct_change()
         vol_90 = daily_returns.rolling(90).std() * np.sqrt(252)
-        
+
         # Avoid division by zero
         vol_90 = np.where(vol_90 == 0, np.nan, vol_90)
         vol_adj_score = roc_90 / vol_90
-        
+
         # Align benchmark regime
         regime = bench_regime.reindex(df.index).fillna(False)
-        
+
         # Entry score: vol_adj_score if positive and benchmark is in bull regime
         df["vol_adj_score"] = np.where(regime & (vol_adj_score > 0), vol_adj_score, 0.0)
         prepared[symbol] = df

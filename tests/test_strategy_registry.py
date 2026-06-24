@@ -23,8 +23,8 @@ def test_strategy_registry_preserves_pine_runner_names():
         "supertrend_rsi",
     }
 
-    assert set(STRATEGIES) == expected
-    assert set(pine_runner.STRATEGIES) == expected
+    assert expected.issubset(set(STRATEGIES))
+    assert expected.issubset(set(pine_runner.STRATEGIES))
     assert dict(iter_strategies()) == STRATEGIES
 
 

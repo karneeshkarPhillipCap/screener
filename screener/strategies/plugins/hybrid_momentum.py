@@ -28,25 +28,25 @@ def _prepare_hybrid(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         if bars is None or bars.empty:
             prepared[symbol] = bars
             continue
-            
+
         df = bars.copy().sort_index()
         close = df["close"].astype(float)
-        
+
         # Accelerating Returns (3m, 6m, 12m)
-        roc_63 = (close / close.shift(63) - 1.0)
-        roc_126 = (close / close.shift(126) - 1.0)
-        roc_252 = (close / close.shift(252) - 1.0)
+        roc_63 = close / close.shift(63) - 1.0
+        roc_126 = close / close.shift(126) - 1.0
+        roc_252 = close / close.shift(252) - 1.0
         adm_score = (roc_63 + roc_126 + roc_252) / 3.0
 
         # Clenow R^2 (Quality of trend) over 90 days
         y = np.log(close)
         r2 = np.zeros(len(y))
-        
+
         if len(y) >= N:
             w = x_diff[::-1]
-            conv = np.convolve(y, w, mode='valid')
+            conv = np.convolve(y, w, mode="valid")
             cov = np.full(len(y), np.nan)
-            cov[N-1:] = conv / N
+            cov[N - 1 :] = conv / N
             var_y = y.rolling(N).var(ddof=0)
             var_y_safe = np.where(var_y == 0, np.nan, var_y)
             r2 = (cov**2) / (var_x * var_y_safe)
@@ -56,18 +56,18 @@ def _prepare_hybrid(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         daily_returns = close.pct_change()
         vol_90 = daily_returns.rolling(N).std() * np.sqrt(252)
         vol_90_safe = np.where(vol_90 == 0, np.nan, vol_90)
-        
+
         # Combine everything
         hybrid_score = (adm_score * r2) / vol_90_safe
-        
+
         # Stock Regime Filters
         stock_sma200 = close.rolling(200, min_periods=200).mean()
         stock_sma50 = close.rolling(50, min_periods=50).mean()
         stock_regime = (close > stock_sma200) & (close > stock_sma50)
-        
+
         # Benchmark Regime Alignment
         regime = bench_regime.reindex(df.index).fillna(False)
-        
+
         # Entry score: hybrid_score if positive and regimes are bull
         df["hybrid_score"] = np.where(
             regime & stock_regime & (hybrid_score > 0), hybrid_score, 0.0

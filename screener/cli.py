@@ -30,6 +30,7 @@ from screener.logging_config import configure_logging
 from screener.operator.cli import register as _register_operator_cli
 from screener import usage
 from screener.unusual_volume.cli import unusual_volume
+from screener.commands.qc_batch import qc_batch
 
 
 @click.group()
@@ -91,6 +92,7 @@ cli.add_command(backtest_lab)
 _register_operator_cli(cli)
 cli.add_command(optimize)
 cli.add_command(cache_group)
+cli.add_command(qc_batch)
 
 
 def _wrap_usage_tracking(command: click.Command, feature_path: tuple[str, ...]) -> None:

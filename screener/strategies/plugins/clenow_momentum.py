@@ -29,12 +29,12 @@ def _prepare_clenow(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         if bars is None or bars.empty:
             prepared[symbol] = bars
             continue
-            
+
         df = bars.copy().sort_index()
         close = df["close"].astype(float)
-        
+
         y = np.log(close)
-        
+
         if len(y) < N:
             df["clenow_score"] = 0.0
             prepared[symbol] = df
@@ -42,29 +42,29 @@ def _prepare_clenow(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
 
         # Calculate rolling slope using convolution
         w = x_diff[::-1]
-        conv = np.convolve(y, w, mode='valid')
-        
+        conv = np.convolve(y, w, mode="valid")
+
         slope = np.full(len(y), np.nan)
-        slope[N-1:] = conv / sum_x_diff_sq
-        
+        slope[N - 1 :] = conv / sum_x_diff_sq
+
         # Annualized slope
         ann_slope = (np.exp(slope) ** 252) - 1.0
-        
+
         # Calculate R^2
         cov = np.full(len(y), np.nan)
-        cov[N-1:] = conv / N
-        
+        cov[N - 1 :] = conv / N
+
         var_y = y.rolling(N).var(ddof=0)
-        
+
         # To avoid division by zero
         var_y_safe = np.where(var_y == 0, np.nan, var_y)
         r2 = (cov**2) / (var_x * var_y_safe)
-        
+
         clenow_score = ann_slope * r2
-        
+
         # Align benchmark regime
         regime = bench_regime.reindex(df.index).fillna(False)
-        
+
         # Entry score: clenow_score if positive and benchmark is in bull regime
         df["clenow_score"] = np.where(regime & (clenow_score > 0), clenow_score, 0.0)
         prepared[symbol] = df

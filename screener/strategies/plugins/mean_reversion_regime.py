@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from screener.strategies.spec import strategy
 
+
 @strategy(
     "mean_reversion_regime",
     entry="rsi(close, 2) < 10 and close > sma(close, 200)",
