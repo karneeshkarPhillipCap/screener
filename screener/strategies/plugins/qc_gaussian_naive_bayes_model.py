@@ -1,6 +1,6 @@
 import pandas as pd
-import numpy as np
 from screener.strategies.spec import PrepareCtx, strategy
+
 
 def _prepare_qc_gaussian_naive_bayes_model(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     prepared = {}
@@ -9,18 +9,20 @@ def _prepare_qc_gaussian_naive_bayes_model(ctx: PrepareCtx) -> dict[str, pd.Data
             prepared[symbol] = bars
             continue
         df = bars.copy().sort_index()
-        
+
         # Approximate the ML model using the 4-day momentum of the open-to-close return
-        open_close_ret = (df['close'] - df['open']) / df['open']
+        open_close_ret = (df["close"] - df["open"]) / df["open"]
         momentum = open_close_ret.rolling(4).sum()
-        
-        df['entry_signal'] = momentum > 0
-        df['exit_signal'] = momentum < 0
+
+        df["entry_signal"] = momentum > 0
+        df["exit_signal"] = momentum < 0
         prepared[symbol] = df
     return prepared
 
+
 def _lookback_qc_gaussian_naive_bayes_model() -> int:
     return 4
+
 
 @strategy(
     "qc_gaussian_naive_bayes_model",
