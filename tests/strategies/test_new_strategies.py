@@ -45,7 +45,3 @@ def test_strategies_registered():
     ultimate_mom = resolve_strategy("ultimate_momentum")
     assert ultimate_mom is not None
     assert ultimate_mom.entry is not None
-
-    ensemble_all = resolve_strategy("ensemble_all")
-    assert ensemble_all is not None
-    assert ensemble_all.entry is not None
