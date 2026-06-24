@@ -45,3 +45,7 @@ def test_strategies_registered():
     ultimate_mom = resolve_strategy("ultimate_momentum")
     assert ultimate_mom is not None
     assert ultimate_mom.entry is not None
+
+    accelerating_dual = resolve_strategy("accelerating_dual")
+    assert accelerating_dual is not None
+    assert accelerating_dual.entry is not None
