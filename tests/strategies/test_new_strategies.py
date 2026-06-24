@@ -29,3 +29,23 @@ def test_strategies_registered():
     vol_mom = resolve_strategy("volatility_momentum")
     assert vol_mom is not None
     assert vol_mom.entry is not None
+
+    hybrid_mom = resolve_strategy("hybrid_momentum")
+    assert hybrid_mom is not None
+    assert hybrid_mom.entry is not None
+
+    omni_mom = resolve_strategy("omni_momentum")
+    assert omni_mom is not None
+    assert omni_mom.entry is not None
+
+    pullback_mom = resolve_strategy("pullback_momentum")
+    assert pullback_mom is not None
+    assert pullback_mom.entry is not None
+
+    ultimate_mom = resolve_strategy("ultimate_momentum")
+    assert ultimate_mom is not None
+    assert ultimate_mom.entry is not None
+
+    ensemble_all = resolve_strategy("ensemble_all")
+    assert ensemble_all is not None
+    assert ensemble_all.entry is not None
