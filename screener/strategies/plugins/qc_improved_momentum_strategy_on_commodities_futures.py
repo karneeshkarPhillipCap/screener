@@ -14,7 +14,7 @@ def prepare_improved_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             continue
 
         close = df["close"].astype(float)
-        log_ret = np.log(close / close.shift(1))
+        log_ret = pd.Series(np.log((close / close.shift(1)).to_numpy()), index=df.index)
 
         mean_ret = log_ret.rolling(252).mean()
         std_ret = log_ret.rolling(252).std()
@@ -37,5 +37,5 @@ def prepare_improved_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     prepare_bars=prepare_improved_momentum,
     required_lookback=lambda: 252,
 )
-def _qc_improved_momentum_strategy_on_commodities_futures():
+def _qc_improved_momentum_strategy_on_commodities_futures() -> None:
     pass

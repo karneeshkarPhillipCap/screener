@@ -18,7 +18,7 @@ def _prepare_fundamental_factors(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     We rank each factor cross-sectionally, place into quintiles (1-5), and sum
     them into an equal-weighted composite factor score, picking the top 20 stocks.
     """
-    metrics = {}
+    metrics: dict[str, pd.DataFrame] = {}
     for sym, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             continue
@@ -58,17 +58,21 @@ def _prepare_fundamental_factors(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     }
 
     # Resample to monthly to calculate scores
-    monthly_scores = {}
+    monthly_scores: dict[str, pd.DataFrame] = {}
     for factor, panel in panels.items():
         panel_monthly = panel.resample("ME").last()
         # Quintile ranking (1 to 5)
         pct_ranks = panel_monthly.rank(axis=1, pct=True)
         # 1 is worst, 5 is best (highest factor value)
-        quintiles = np.ceil(pct_ranks * 5)
+        quintiles = pd.DataFrame(
+            np.ceil(pct_ranks.to_numpy() * 5),
+            index=pct_ranks.index,
+            columns=pct_ranks.columns,
+        )
         monthly_scores[factor] = quintiles
 
     # Composite score
-    df_composite = sum(monthly_scores.values()) / 4.0
+    df_composite = sum(monthly_scores.values(), pd.DataFrame()) / 4.0
 
     # Select top 20 based on composite score
     composite_ranks = df_composite.rank(axis=1, ascending=False)
@@ -77,7 +81,7 @@ def _prepare_fundamental_factors(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     # Forward fill to daily
     top_20 = top_20_monthly.reindex(panels["mom"].index, method="ffill").fillna(False)
 
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for sym, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[sym] = bars

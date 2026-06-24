@@ -4,7 +4,7 @@ from screener.strategies.spec import PrepareCtx, strategy
 
 
 def _prepare_totm(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
 
     for sym, bars in ctx.bars_by_tv.items():
         if bars.empty:
@@ -14,7 +14,7 @@ def _prepare_totm(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         df = bars.copy().sort_index()
 
         # Identify the last trading day of the month
-        month = df.index.month
+        month = pd.DatetimeIndex(df.index).month
         # The next day's month is different than today's month -> today is trading month end
         is_trading_month_end = month != pd.Series(month).shift(-1).values
         # The last row of the dataset is also technically the last known day, but we can't be sure it's month end.

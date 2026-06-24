@@ -8,7 +8,7 @@ from screener.strategies.spec import PrepareCtx, strategy
 
 
 def _prepare_option(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[symbol] = bars
@@ -18,7 +18,8 @@ def _prepare_option(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
 
         # Third Friday logic
         # 1. find all Fridays
-        fridays = df[df.index.weekday == 4].index
+        index = pd.DatetimeIndex(df.index)
+        fridays = index[index.weekday == 4]
         # 2. group by year and month
         # A day is a third Friday if 15 <= day <= 21
         third_fridays = fridays[(fridays.day >= 15) & (fridays.day <= 21)]

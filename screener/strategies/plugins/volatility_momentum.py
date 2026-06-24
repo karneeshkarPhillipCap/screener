@@ -17,7 +17,7 @@ def _prepare_volatility_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     bench_sma200 = benchmark_close.rolling(200, min_periods=200).mean()
     bench_regime = benchmark_close > bench_sma200
 
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[symbol] = bars
@@ -31,7 +31,7 @@ def _prepare_volatility_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         vol_90 = daily_returns.rolling(90).std() * np.sqrt(252)
 
         # Avoid division by zero
-        vol_90 = np.where(vol_90 == 0, np.nan, vol_90)
+        vol_90 = pd.Series(np.where(vol_90 == 0, np.nan, vol_90), index=df.index)
         vol_adj_score = roc_90 / vol_90
 
         # Align benchmark regime

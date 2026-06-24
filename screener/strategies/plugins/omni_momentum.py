@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pandas as pd
 import numpy as np
+import numpy.typing as npt
 
 from screener.strategies.spec import PrepareCtx, strategy
 
 
-def calc_clenow(y: pd.Series, N: int) -> np.ndarray:
+def calc_clenow(y: pd.Series, N: int) -> npt.NDArray[np.float64]:
     if len(y) < N:
         return np.zeros(len(y))
 
@@ -34,7 +35,7 @@ def calc_clenow(y: pd.Series, N: int) -> np.ndarray:
     r2 = (cov**2) / (var_x * var_y_safe)
 
     score = ann_slope * r2
-    return np.nan_to_num(score)
+    return np.asarray(np.nan_to_num(score), dtype=np.float64)
 
 
 def _prepare_omni(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
@@ -46,7 +47,7 @@ def _prepare_omni(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     bench_sma100 = benchmark_close.rolling(100, min_periods=100).mean()
     bench_regime = benchmark_close > bench_sma100
 
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[symbol] = bars
@@ -54,7 +55,7 @@ def _prepare_omni(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
 
         df = bars.copy().sort_index()
         close = df["close"].astype(float)
-        y = np.log(close)
+        y = pd.Series(np.log(close.to_numpy()), index=close.index)
 
         c45 = calc_clenow(y, 45)
         c90 = calc_clenow(y, 90)

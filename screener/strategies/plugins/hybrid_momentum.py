@@ -23,7 +23,7 @@ def _prepare_hybrid(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     x_diff = x - x_mean
     var_x = np.var(x)
 
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[symbol] = bars
@@ -39,7 +39,7 @@ def _prepare_hybrid(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         adm_score = (roc_63 + roc_126 + roc_252) / 3.0
 
         # Clenow R^2 (Quality of trend) over 90 days
-        y = np.log(close)
+        y = pd.Series(np.log(close.to_numpy()), index=close.index)
         r2 = np.zeros(len(y))
 
         if len(y) >= N:
@@ -48,14 +48,14 @@ def _prepare_hybrid(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             cov = np.full(len(y), np.nan)
             cov[N - 1 :] = conv / N
             var_y = y.rolling(N).var(ddof=0)
-            var_y_safe = np.where(var_y == 0, np.nan, var_y)
+            var_y_safe = pd.Series(np.where(var_y == 0, np.nan, var_y), index=df.index)
             r2 = (cov**2) / (var_x * var_y_safe)
             r2 = np.nan_to_num(r2)
 
         # Volatility penalty (90-day annualized volatility)
         daily_returns = close.pct_change()
         vol_90 = daily_returns.rolling(N).std() * np.sqrt(252)
-        vol_90_safe = np.where(vol_90 == 0, np.nan, vol_90)
+        vol_90_safe = pd.Series(np.where(vol_90 == 0, np.nan, vol_90), index=df.index)
 
         # Combine everything
         hybrid_score = (adm_score * r2) / vol_90_safe

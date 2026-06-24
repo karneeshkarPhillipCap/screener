@@ -17,16 +17,20 @@ def _prepare_pairs(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     if benchmark_bars is None or benchmark_bars.empty:
         return ctx.bars_by_tv
 
-    bench_log = np.log(benchmark_bars["close"].astype(float))
+    benchmark_close = benchmark_bars["close"].astype(float)
+    bench_log = pd.Series(
+        np.log(benchmark_close.to_numpy()), index=benchmark_close.index
+    )
 
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[symbol] = bars
             continue
 
         df = bars.copy().sort_index()
-        asset_log = np.log(df["close"].astype(float))
+        close = df["close"].astype(float)
+        asset_log = pd.Series(np.log(close.to_numpy()), index=close.index)
 
         # Rolling Beta and Alpha over 252 days
         cov = asset_log.rolling(252).cov(bench_log)

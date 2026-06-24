@@ -25,7 +25,7 @@ def _prepare_pullback_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     var_x = np.var(x)
     sum_x_diff_sq = np.sum(x_diff**2)
 
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[symbol] = bars
@@ -33,7 +33,7 @@ def _prepare_pullback_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
 
         df = bars.copy().sort_index()
         close = df["close"].astype(float)
-        y = np.log(close)
+        y = pd.Series(np.log(close.to_numpy()), index=close.index)
 
         # 1. Clenow Momentum Score
         clenow_score = np.zeros(len(y))
@@ -47,7 +47,7 @@ def _prepare_pullback_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             cov = np.full(len(y), np.nan)
             cov[N - 1 :] = conv / N
             var_y = y.rolling(N).var(ddof=0)
-            var_y_safe = np.where(var_y == 0, np.nan, var_y)
+            var_y_safe = pd.Series(np.where(var_y == 0, np.nan, var_y), index=df.index)
             r2 = (cov**2) / (var_x * var_y_safe)
             clenow_score = np.nan_to_num(ann_slope * r2)
 

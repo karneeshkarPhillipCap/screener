@@ -26,7 +26,11 @@ def _prepare_stat_arb(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         return ctx.bars_by_tv
 
     df_closes = pd.DataFrame(closes)
-    log_p = np.log(df_closes).ffill()
+    log_p = pd.DataFrame(
+        np.log(df_closes.to_numpy()),
+        index=df_closes.index,
+        columns=df_closes.columns,
+    ).ffill()
 
     # The 1st principal component proxy is the equal-weighted mean of log prices
     market_log_p = log_p.mean(axis=1)
@@ -56,7 +60,7 @@ def _prepare_stat_arb(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     long_daily = long_monthly.reindex(df_res.index, method="ffill").fillna(False)
     short_daily = short_monthly.reindex(df_res.index, method="ffill").fillna(False)
 
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for sym, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[sym] = bars

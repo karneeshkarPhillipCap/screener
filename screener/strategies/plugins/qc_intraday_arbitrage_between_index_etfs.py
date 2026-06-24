@@ -5,10 +5,10 @@ from screener.strategies.spec import PrepareCtx, strategy
 def _prepare_qc_intraday_arbitrage_between_index_etfs(
     ctx: PrepareCtx,
 ) -> dict[str, pd.DataFrame]:
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
 
     # Calculate cross-sectional mean (market proxy)
-    closes = {}
+    closes: dict[str, pd.Series] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         if bars is not None and not bars.empty:
             closes[symbol] = bars["close"]

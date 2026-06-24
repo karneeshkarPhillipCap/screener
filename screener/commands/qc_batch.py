@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import click
 import pandas as pd
 from rich.console import Console
@@ -16,6 +18,11 @@ import datetime
 from dateutil.relativedelta import relativedelta
 
 
+class MarketCfg(TypedDict):
+    tickers: tuple[str, ...]
+    benchmark: str
+
+
 @click.command(name="qc-batch")
 @click.option("--csv", "output_csv", is_flag=True, help="Output as CSV.")
 @click.option("--years", type=int, default=5, help="Number of years to backtest.")
@@ -23,7 +30,7 @@ def qc_batch(output_csv: bool, years: int) -> None:
     """Run batch backtest of all implemented QuantConnect strategies."""
     console = Console()
 
-    from screener.strategies.registry import discover_plugins
+    from screener.strategies.spec import discover_plugins
 
     discover_plugins()
     strategies = [name for name, _ in registry.items() if name.startswith("qc_")]
@@ -32,7 +39,7 @@ def qc_batch(output_csv: bool, years: int) -> None:
         click.echo("No QuantConnect strategies implemented yet.", err=output_csv)
         return
 
-    results_list = []
+    results_list: list[dict[str, object]] = []
 
     with open("us_universe.txt") as f:
         us_tickers = tuple(line.strip() for line in f if line.strip()) + ("SPY",)
@@ -40,7 +47,7 @@ def qc_batch(output_csv: bool, years: int) -> None:
     with open("india_universe.txt") as f:
         india_tickers = tuple(line.strip() for line in f if line.strip()) + ("^NSEI",)
 
-    MARKETS_CFG = {
+    MARKETS_CFG: dict[str, MarketCfg] = {
         "us": {"tickers": us_tickers, "benchmark": "SPY"},
         "india": {"tickers": india_tickers, "benchmark": "^NSEI"},
     }

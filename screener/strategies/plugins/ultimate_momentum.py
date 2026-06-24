@@ -24,7 +24,7 @@ def _prepare_ultimate_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     var_x = np.var(x)
     sum_x_diff_sq = np.sum(x_diff**2)
 
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[symbol] = bars
@@ -34,7 +34,7 @@ def _prepare_ultimate_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         close = df["close"].astype(float)
 
         # 1. Clenow Quality Momentum (90-day)
-        y = np.log(close)
+        y = pd.Series(np.log(close.to_numpy()), index=close.index)
         clenow_score = np.zeros(len(y))
         if len(y) >= N:
             w = x_diff[::-1]
@@ -46,7 +46,7 @@ def _prepare_ultimate_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             cov = np.full(len(y), np.nan)
             cov[N - 1 :] = conv / N
             var_y = y.rolling(N).var(ddof=0)
-            var_y_safe = np.where(var_y == 0, np.nan, var_y)
+            var_y_safe = pd.Series(np.where(var_y == 0, np.nan, var_y), index=df.index)
             r2 = (cov**2) / (var_x * var_y_safe)
             clenow_score = np.nan_to_num(ann_slope * r2)
 
@@ -61,7 +61,7 @@ def _prepare_ultimate_momentum(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         roc_90 = close / close.shift(90) - 1.0
         daily_returns = close.pct_change()
         vol_90 = daily_returns.rolling(90).std() * np.sqrt(252)
-        vol_90_safe = np.where(vol_90 == 0, np.nan, vol_90)
+        vol_90_safe = pd.Series(np.where(vol_90 == 0, np.nan, vol_90), index=df.index)
         vol_adj_score = np.nan_to_num(roc_90 / vol_90_safe)
 
         # Combined Score (Geometric-like product)

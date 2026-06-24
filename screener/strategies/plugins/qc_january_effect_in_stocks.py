@@ -8,14 +8,14 @@ from screener.strategies.spec import PrepareCtx, strategy
 
 
 def _prepare_jan_eff(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
-    prepared = {}
+    prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             prepared[symbol] = bars
             continue
 
         df = bars.copy().sort_index()
-        df["is_jan"] = df.index.month == 1
+        df["is_jan"] = pd.DatetimeIndex(df.index).month == 1
         prepared[symbol] = df
 
     return prepared
